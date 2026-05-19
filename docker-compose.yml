@@ -1,0 +1,90 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env.local
+    depends_on:
+      - db
+      - temporal
+    environment:
+      POETRY_VIRTUALENVS_CREATE: "false"
+      PYTHONUNBUFFERED: "1"
+      TEMPORAL_ADDRESS: "temporal:7233"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.workers.worker
+    volumes:
+      - .:/app
+    env_file:
+      - .env.local
+    depends_on:
+      - db
+      - temporal
+    environment:
+      POETRY_VIRTUALENVS_CREATE: "false"
+      PYTHONUNBUFFERED: "1"
+      TEMPORAL_ADDRESS: "temporal:7233"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    container_name: octoflash-postgres
+    environment:
+      POSTGRES_DB: octoflash_db
+      POSTGRES_USER: octoflash
+      POSTGRES_PASSWORD: octoflash
+    ports:
+      - "5433:5432"  # 5433 on host to avoid clash with brew's postgresql@17
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: octoflash-pgadmin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@octoflash.dev
+      PGADMIN_DEFAULT_PASSWORD: octoflash
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+
+  # Temporal dev server — single-binary Temporal for local dev.
+  # In production, point TEMPORAL_TARGET at Temporal Cloud and set TEMPORAL_API_KEY
+  # (or self-host the full Temporal cluster); the workflows + activities are identical.
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: octoflash-temporal
+    command:
+      - server
+      - start-dev
+      - --ip
+      - 0.0.0.0
+      - --ui-port
+      - "8233"
+    ports:
+      - "7233:7233"  # gRPC — SDK client connects here
+      - "8233:8233"  # Web UI — http://localhost:8233
+    volumes:
+      - temporal_data:/etc/temporal/persistence
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  pgadmin_data:
+  temporal_data:
