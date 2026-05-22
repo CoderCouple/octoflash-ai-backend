@@ -1,0 +1,757 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Python FastAPI ECS service — wildcard ACM certificate, ALB, ECS service,
+  auto-scaling, and service discovery. Hosted zone is pre-existing (not managed
+  by this stack).
+
+Parameters:
+  ProjectName:
+    Type: String
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+  # ── Shared foundation (deployed once by Octopod; Octoflash reuses) ──
+  NetworkStackName:
+    Type: String
+    Default: octopodai-dev-network-stack
+    AllowedPattern: \S+
+  ClusterStackName:
+    Type: String
+    Default: octopodai-dev-ecs-cluster
+    AllowedPattern: \S+
+  DBStackName:
+    Type: String
+    Default: octopodai-dev-postgress-db-stack
+    AllowedPattern: \S+
+    Description: Octopod's RDS stack. Octoflash uses the same instance but a
+      separate Postgres database (see DBName).
+  DBName:
+    Type: String
+    Default: octoflash_db
+    AllowedPattern: \S+
+    Description: Postgres database on the shared RDS. Create once via
+      `CREATE DATABASE octoflash_db;` against the Octopod RDS endpoint.
+  EmailServiceStackName:
+    Type: String
+    Default: octopodai-dev-email-service-stack
+    AllowedPattern: \S+
+    Description: Octopod's SES + SQS + Lambda email pipeline. Octoflash
+      publishes to the shared queue for transactional / marketing emails.
+  EmailQueueExportName:
+    Type: String
+    Default: octopodai-dev-email-queue-url
+    AllowedPattern: \S+
+    Description: CloudFormation Export name for the shared SQS email queue URL.
+  # ── Octoflash-specific stacks ───────────────────────────────────────
+  CodeBuildStackName:
+    Type: String
+    Default: octoflash-dev-python-code-build-stack
+    AllowedPattern: \S+
+    Description: Stack 02 — exports the Octoflash backend ECR URI.
+  StripeStackName:
+    Type: String
+    Default: octoflash-dev-stripe-stack
+    AllowedPattern: \S+
+  TemporalSecretsStackName:
+    Type: String
+    Default: octoflash-dev-temporal-secrets-stack
+    AllowedPattern: \S+
+    Description: Stack 15 — exports TemporalSecretArn (address, namespace, api_key)
+  OauthSecretsStackName:
+    Type: String
+    Default: octoflash-dev-oauth-secrets-stack
+    AllowedPattern: \S+
+  SesFromEmail:
+    Type: String
+    Default: noreply@octoflash.ai
+    Description: Verified SES sender for Octoflash mail. Must be SES-verified
+      in the shared region; Octopod's email Lambda fans this out as the From.
+  DomainName:
+    Type: String
+    Default: octoflash.ai
+    Description: Public domain (e.g. octoflash.ai) — no trailing dot
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Default: Z00628722L7RGH80G6C89
+    Description: ID of the existing Route53 public hosted zone for DomainName
+  ServiceDiscoveryName:
+    Type: String
+    Default: api
+    Description: Subdomain for the API (api.octoflash.ai)
+  ClusterMinSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  ClusterMaxSize:
+    Type: Number
+    Default: 2
+    MinValue: 1
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Wildcard ACM Certificate (*.octoflash.ai + octoflash.ai)
+  # CloudFormation auto-creates DNS validation records in the existing hosted zone.
+  # ---------------------------------------------------------------------------
+  WildcardCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '*.${DomainName}'
+      SubjectAlternativeNames:
+        - !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub '*.${DomainName}'
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-wildcard-cert
+
+  # ---------------------------------------------------------------------------
+  # IAM — Execution Role (ECS agent: pull image, write logs, read secrets)
+  # ---------------------------------------------------------------------------
+  PythonECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-ecs-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets-and-ecr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !ImportValue
+                    'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+
+  # ---------------------------------------------------------------------------
+  # IAM — Task Role (container runtime permissions)
+  # ---------------------------------------------------------------------------
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-ecs-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: task-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-*
+                  - !Sub arn:aws:s3:::${ProjectName}-${Environment}-*/*
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !ImportValue
+                    'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.*'
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                Resource:
+                  - !ImportValue
+                    'Fn::Sub': '${ProjectName}-${Environment}-email-queue-arn'
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Log Group
+  # ---------------------------------------------------------------------------
+  PythonLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${ProjectName}-${Environment}-python
+      RetentionInDays: !If [IsProd, 30, 14]
+
+  # ---------------------------------------------------------------------------
+  # ECS Task Definition
+  # Image: pulled from Stack 02 (octoflash-ai-backend-ecr-repo)
+  # Secrets: resolved at task startup from Secrets Manager
+  # ---------------------------------------------------------------------------
+  PythonECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${ProjectName}-${Environment}-python
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [EC2]
+      Memory: 3072   # split 50/50 between fastapi-container and temporal-worker
+      Cpu: 1024
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ExecutionRoleArn: !GetAtt PythonECSExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: fastapi-container
+          Image: !Sub
+            - '${ECRUri}:latest'
+            - ECRUri: !ImportValue
+                'Fn::Sub': '${CodeBuildStackName}-ECRRepositoryUri'
+          Essential: true
+          # 50/50 split with the temporal-worker sidecar below. Task-level
+          # Memory: 3072 / Cpu: 1024 caps both containers combined; bump the
+          # task size + cluster instance type when render workloads outgrow.
+          Memory: 1536
+          MemoryReservation: 1024
+          Cpu: 512
+          PortMappings:
+            - ContainerPort: 8000
+              HostPort: 8000
+              Protocol: tcp
+          Ulimits:
+            - Name: nofile
+              SoftLimit: 4000
+              HardLimit: 4000
+          HealthCheck:
+            Command: [CMD-SHELL, 'curl -sf http://localhost:8000/api/v1/health || exit 1']
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+
+          # Non-sensitive environment variables. The `&container_env` anchor
+          # is referenced by the temporal-worker sidecar below — keeping them
+          # in lockstep so both containers see the same config.
+          Environment: &container_env
+            - Name: APP_NAME
+              Value: Octoflash Backend
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: DEBUG
+              Value: !If [IsProd, 'false', 'false']
+            - Name: HOST
+              Value: '0.0.0.0'
+            - Name: PORT
+              Value: '8000'
+            - Name: API_PREFIX
+              Value: /api/v1
+            - Name: ALLOWED_ORIGINS
+              Value: !If [IsProd, '["https://octoflash.ai","https://www.octoflash.ai"]', '["*"]']
+            - Name: POSTGRES_HOST
+              Value: !ImportValue
+                'Fn::Sub': '${DBStackName}-DBEndpoint'
+            - Name: POSTGRES_PORT
+              Value: '5432'
+            - Name: POSTGRES_DB
+              Value: !Ref DBName
+            - Name: DB_SSL_REQUIRE
+              Value: 'true'
+            - Name: COGNITO_USER_POOL_ID
+              Value: !ImportValue
+                'Fn::Sub': 'octoflash-cognito-UserPoolId'
+            - Name: COGNITO_REGION
+              Value: !ImportValue
+                'Fn::Sub': 'octoflash-cognito-CognitoRegion'
+            - Name: COGNITO_APP_CLIENT_ID
+              Value: !ImportValue
+                'Fn::Sub': 'octoflash-cognito-FrontendAppClientId'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SES_FROM_EMAIL
+              Value: !Ref SesFromEmail
+            - Name: SQS_EMAIL_QUEUE_URL
+              Value: !ImportValue
+                Ref: EmailQueueExportName
+            - Name: SQS_EMAIL_MESSAGE_GROUP
+              # Octoflash messages get their own SQS group so Octopod's
+              # Lambda can route them separately (per-product templates,
+              # rate limits, etc.).
+              Value: !Sub '${ProjectName}-${Environment}-email-group'
+            - Name: TEMPORAL_TASK_QUEUE
+              Value: !Sub '${ProjectName}-${Environment}-renders'
+
+          # Sensitive values — resolved from Secrets Manager at task startup.
+          # `&container_secrets` anchor is reused by the worker sidecar.
+          Secrets: &container_secrets
+            - Name: POSTGRES_USER
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - ':username::'
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - ':password::'
+            - Name: STRIPE_SECRET_KEY
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':secret_key::'
+            - Name: STRIPE_WEBHOOK_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':webhook_secret::'
+            - Name: STRIPE_PRICE_ID_PRO
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':price_id_pro::'
+            - Name: STRIPE_PRICE_ID_ENTERPRISE
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':price_id_enterprise::'
+            # Google (Gmail) OAuth
+            - Name: GOOGLE_CLIENT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':client_id::'
+            - Name: GOOGLE_CLIENT_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':client_secret::'
+            - Name: GOOGLE_REDIRECT_URI
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':redirect_uri::'
+            # Microsoft (Outlook) OAuth
+            - Name: MS_CLIENT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':client_id::'
+            - Name: MS_CLIENT_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':client_secret::'
+            - Name: MS_TENANT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':tenant_id::'
+            - Name: MS_REDIRECT_URI
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':redirect_uri::'
+            - Name: TEMPORAL_ADDRESS
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':address::'
+            - Name: TEMPORAL_NAMESPACE
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':namespace::'
+            - Name: TEMPORAL_API_KEY
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':api_key::'
+
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref PythonLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+              mode: non-blocking
+              max-buffer-size: 4m
+
+        # ─────────────────────────────────────────────────────────────────
+        # Sidecar: Temporal worker
+        # ─────────────────────────────────────────────────────────────────
+        # Same ECR image as the API; the entrypoint is overridden to run
+        # `python -m app.workers.worker`. Shares Environment + Secrets with
+        # the API via YAML anchors so both containers see identical config
+        # (Postgres URL, Cognito IDs, Stripe keys, Temporal creds, …).
+        #
+        # `Essential: false` — if the worker crashes, ECS restarts only the
+        # worker, not the whole task; the API keeps serving. Temporal
+        # auto-retries any in-flight activities once the worker is back up.
+        #
+        # No PortMappings — the worker doesn't accept inbound HTTP.
+        # No HealthCheck — Temporal manages worker liveness via heartbeats.
+        - Name: temporal-worker
+          Image: !Sub
+            - '${ECRUri}:latest'
+            - ECRUri: !ImportValue
+                'Fn::Sub': '${CodeBuildStackName}-ECRRepositoryUri'
+          Essential: false
+          Memory: 1536
+          MemoryReservation: 1024
+          Cpu: 512
+          Command:
+            - python
+            - -m
+            - app.workers.worker
+          Environment: *container_env
+          Secrets: *container_secrets
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref PythonLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+              mode: non-blocking
+              max-buffer-size: 4m
+
+  # ---------------------------------------------------------------------------
+  # Service Discovery (VPC-internal: api.octoflash-dev.local)
+  # ---------------------------------------------------------------------------
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}.local'
+      Vpc: !ImportValue
+        'Fn::Sub': '${NetworkStackName}-VPCID'
+
+  ServiceDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: !Ref ServiceDiscoveryName
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 60
+        NamespaceId: !Ref ServiceDiscoveryNamespace
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ---------------------------------------------------------------------------
+  # ALB — internet-facing, public subnets
+  # ---------------------------------------------------------------------------
+  PythonLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-alb'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !ImportValue
+          'Fn::Sub': '${NetworkStackName}-ExtApiELBSecurityGroup'
+      Subnets:
+        - !ImportValue
+          'Fn::Sub': '${NetworkStackName}-PublicSubnetA'
+        - !ImportValue
+          'Fn::Sub': '${NetworkStackName}-PublicSubnetB'
+        - !ImportValue
+          'Fn::Sub': '${NetworkStackName}-PublicSubnetC'
+      LoadBalancerAttributes:
+        # ML reranker model load can take ~90s on cold start; give it headroom
+        - Key: idle_timeout.timeout_seconds
+          Value: '180'
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-alb
+
+  PythonTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: PythonLoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-tg'
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+      VpcId: !ImportValue
+        'Fn::Sub': '${NetworkStackName}-VPCID'
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /api/v1/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-tg
+
+  # HTTP → HTTPS redirect
+  PythonHTTPLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PythonLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            StatusCode: HTTP_301
+
+  # HTTPS → target group
+  PythonHTTPSLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PythonLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref WildcardCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref PythonTargetGroup
+
+  # ---------------------------------------------------------------------------
+  # ECS Service
+  # ---------------------------------------------------------------------------
+  PythonECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - PythonHTTPSLoadBalancerListener
+      - PythonHTTPLoadBalancerListener
+    Properties:
+      ServiceName: !Sub '${ProjectName}-${Environment}-python-service'
+      Cluster: !ImportValue
+        'Fn::Sub': '${ClusterStackName}-ECSClusterId'
+      TaskDefinition: !Ref PythonECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: EC2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !ImportValue
+              'Fn::Sub': '${NetworkStackName}-AppSecurityGroup'
+          Subnets:
+            - !ImportValue
+              'Fn::Sub': '${NetworkStackName}-AppSubnetA'
+            - !ImportValue
+              'Fn::Sub': '${NetworkStackName}-AppSubnetB'
+            - !ImportValue
+              'Fn::Sub': '${NetworkStackName}-AppSubnetC'
+      LoadBalancers:
+        - ContainerName: fastapi-container
+          ContainerPort: 8000
+          TargetGroupArn: !Ref PythonTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
+
+  # ---------------------------------------------------------------------------
+  # Auto Scaling
+  # ---------------------------------------------------------------------------
+  PythonECSServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref ClusterMinSize
+      MaxCapacity: !Ref ClusterMaxSize
+      ResourceId: !Join
+        - /
+        - - service
+          - !ImportValue
+            'Fn::Sub': '${ClusterStackName}-ECSClusterId'
+          - !GetAtt PythonECSService.Name
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  PythonECSServiceScaleUpPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-scale-up'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref PythonECSServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 300
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+
+  PythonECSServiceScaleDownPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-scale-down'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref PythonECSServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 300
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  PythonECSServiceHighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale up when CPU > 80%
+      AlarmActions: [!Ref PythonECSServiceScaleUpPolicy]
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            'Fn::Sub': '${ClusterStackName}-ECSClusterId'
+        - Name: ServiceName
+          Value: !GetAtt PythonECSService.Name
+
+  PythonECSServiceLowCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale down when CPU < 20% for 15 periods
+      AlarmActions: [!Ref PythonECSServiceScaleDownPolicy]
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 120
+      EvaluationPeriods: 15
+      Threshold: 20
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            'Fn::Sub': '${ClusterStackName}-ECSClusterId'
+        - Name: ServiceName
+          Value: !GetAtt PythonECSService.Name
+
+  # ---------------------------------------------------------------------------
+  # Route53 — api.octoflash.ai → ALB
+  # ---------------------------------------------------------------------------
+  AppDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '${ServiceDiscoveryName}.${DomainName}'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt PythonLoadBalancer.DNSName
+        EvaluateTargetHealth: false
+        HostedZoneId: !GetAtt PythonLoadBalancer.CanonicalHostedZoneID
+
+Outputs:
+
+  WildcardCertificateArn:
+    Description: ARN of the wildcard ACM certificate
+    Value: !Ref WildcardCertificate
+    Export:
+      Name: !Sub '${AWS::StackName}-WildcardCertArn'
+
+  PythonLoadBalancerDNSName:
+    Description: ALB DNS name
+    Value: !GetAtt PythonLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonLoadBalancerDNSName'
+
+  PythonLoadBalancerCanonicalHostedZoneID:
+    Description: ALB canonical hosted zone ID (for Route53 alias records)
+    Value: !GetAtt PythonLoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonLoadBalancerCanonicalHostedZoneID'
+
+  PythonHTTPSListenerArn:
+    Description: ARN of the HTTPS listener
+    Value: !Ref PythonHTTPSLoadBalancerListener
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonHTTPSListenerArn'
+
+  PythonHTTPListenerArn:
+    Description: ARN of the HTTP listener
+    Value: !Ref PythonHTTPLoadBalancerListener
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonHTTPListenerArn'
+
+  PythonTargetGroupArn:
+    Description: ARN of the target group
+    Value: !Ref PythonTargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonTargetGroupArn'
+
+  PythonECSServiceName:
+    Description: ECS service name
+    Value: !GetAtt PythonECSService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonECSServiceName'
+
+  PythonECSExecutionRoleArn:
+    Description: ARN of the ECS execution role
+    Value: !GetAtt PythonECSExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonECSExecutionRoleArn'
+
+  PythonLogGroupName:
+    Description: CloudWatch log group name
+    Value: !Ref PythonLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-PythonLogGroupName'
+
+  ExternalApiEndpoint:
+    Description: Public API URL
+    Value: !Sub 'https://${ServiceDiscoveryName}.${DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ExternalApiEndpoint'
+
+  InternalApiEndpoint:
+    Description: VPC-internal service discovery DNS name
+    Value: !Sub '${ServiceDiscoveryName}.${ProjectName}-${Environment}.local'
+    Export:
+      Name: !Sub '${AWS::StackName}-InternalApiEndpoint'

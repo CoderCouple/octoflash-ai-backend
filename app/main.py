@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router as api_router
+from app.api.v1.controller.billing_webhook_api import router as stripe_webhook_router
 from app.common.exceptions import register_exception_handlers
 from app.settings import settings
 
@@ -52,6 +53,9 @@ app.add_middleware(
 register_exception_handlers(app)
 
 app.include_router(api_router)
+# Stripe webhook is mounted at root (no /api/v1 prefix, no JWT auth — the
+# signature header is the credential).
+app.include_router(stripe_webhook_router)
 
 
 @app.get("/")

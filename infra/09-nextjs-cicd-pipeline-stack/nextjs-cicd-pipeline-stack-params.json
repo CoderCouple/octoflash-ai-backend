@@ -1,0 +1,38 @@
+[
+  {
+    "ParameterKey": "PipelineName",
+    "ParameterValue": "octoflash-dev-nextjs-cicd-pipeline"
+  },
+  {
+    "ParameterKey": "GitHubOrganization",
+    "ParameterValue": "CoderCouple"
+  },
+  {
+    "ParameterKey": "GitHubRepo",
+    "ParameterValue": "octoflash-ai-frontend"
+  },
+  {
+    "ParameterKey": "CodeBuildProjectName",
+    "ParameterValue": "octoflash-ai-frontend-dev-build"
+  },
+  {
+    "ParameterKey": "ClusterStackName",
+    "ParameterValue": "octopodai-dev-ecs-cluster"
+  },
+  {
+    "ParameterKey": "ECSServiceName",
+    "ParameterValue": "octoflash-dev-nextjs-service"
+  },
+  {
+    "ParameterKey": "SNSTopicName",
+    "ParameterValue": "octoflash-dev-nextjs-cicd-pipeline"
+  },
+  {
+    "ParameterKey": "GitHubTokenSecretName",
+    "ParameterValue": "OCTOPOD-BACKEND-GITHUB-TOKEN"
+  },
+  {
+    "ParameterKey": "UseCodeStarConnection",
+    "ParameterValue": "false"
+  }
+]

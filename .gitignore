@@ -54,10 +54,14 @@ cover/
 *.pot
 
 # Environments
-.env
+.env.dev
 .env.*
 !.env.example
 .venv
+
+# Local artifacts
+.octoflash-setup.log
+storage/
 env/
 venv/
 ENV/

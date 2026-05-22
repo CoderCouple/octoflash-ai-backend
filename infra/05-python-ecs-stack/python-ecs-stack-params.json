@@ -1,0 +1,76 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "octoflash"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+
+  {
+    "ParameterKey": "NetworkStackName",
+    "ParameterValue": "octopodai-dev-network-stack"
+  },
+  {
+    "ParameterKey": "ClusterStackName",
+    "ParameterValue": "octopodai-dev-ecs-cluster"
+  },
+  {
+    "ParameterKey": "DBStackName",
+    "ParameterValue": "octopodai-dev-postgress-db-stack"
+  },
+  {
+    "ParameterKey": "DBName",
+    "ParameterValue": "octoflash_db"
+  },
+  {
+    "ParameterKey": "EmailServiceStackName",
+    "ParameterValue": "octopodai-dev-email-service-stack"
+  },
+  {
+    "ParameterKey": "EmailQueueExportName",
+    "ParameterValue": "octopodai-dev-email-queue-url"
+  },
+  {
+    "ParameterKey": "CodeBuildStackName",
+    "ParameterValue": "octoflash-dev-python-code-build-stack"
+  },
+  {
+    "ParameterKey": "TemporalSecretsStackName",
+    "ParameterValue": "octoflash-dev-temporal-secrets-stack"
+  },
+  {
+    "ParameterKey": "StripeStackName",
+    "ParameterValue": "octoflash-dev-stripe-stack"
+  },
+  {
+    "ParameterKey": "OauthSecretsStackName",
+    "ParameterValue": "octoflash-dev-oauth-secrets-stack"
+  },
+
+  {
+    "ParameterKey": "SesFromEmail",
+    "ParameterValue": "noreply@octoflash.ai"
+  },
+  {
+    "ParameterKey": "DomainName",
+    "ParameterValue": "octoflash.ai"
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": "Z00628722L7RGH80G6C89"
+  },
+  {
+    "ParameterKey": "ServiceDiscoveryName",
+    "ParameterValue": "api"
+  },
+  {
+    "ParameterKey": "ClusterMinSize",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "ClusterMaxSize",
+    "ParameterValue": "2"
+  }
+]

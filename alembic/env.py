@@ -11,16 +11,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from app.db.base import Base  # noqa: E402
 
-# Import all models so Base.metadata knows about them
-from app.model.channel_model import Channel  # noqa: E402, F401
-from app.model.channel_video_model import ChannelVideo  # noqa: E402, F401
-from app.model.job_model import Job  # noqa: E402, F401
-from app.model.project_model import Project  # noqa: E402, F401
-from app.model.scene_instruction_model import SceneInstruction  # noqa: E402, F401
-from app.model.scene_model import Scene  # noqa: E402, F401
-from app.model.variation_model import Variation  # noqa: E402, F401
-from app.model.workflow_edge_model import WorkflowEdge  # noqa: E402, F401
-from app.model.workflow_node_model import WorkflowNode  # noqa: E402, F401
+# Eager-import every model so Base.metadata is complete for autogenerate.
+# `app.model.__init__` already does the work; importing it here is sufficient.
+import app.model  # noqa: E402, F401
+
 from app.settings import settings  # noqa: E402
 
 config = context.config

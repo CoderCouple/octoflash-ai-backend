@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.tags import Tags
 from app.api.v1.request.export_request import ExportRequest, PreviewRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
-from app.api.v1.response.job_response import JobResponse
+from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.db.session import get_db
 from app.service.export_service import ExportService
 
@@ -19,7 +19,7 @@ def get_export_service(db: AsyncSession = Depends(get_db)) -> ExportService:
 
 @router.post(
     "/projects/{project_id}/preview",
-    response_model=BaseResponse[JobResponse],
+    response_model=BaseResponse[WorkflowExecutionResponse],
     status_code=202,
 )
 async def queue_preview(
@@ -34,7 +34,7 @@ async def queue_preview(
 
 @router.post(
     "/projects/{project_id}/export",
-    response_model=BaseResponse[JobResponse],
+    response_model=BaseResponse[WorkflowExecutionResponse],
     status_code=202,
 )
 async def queue_export(

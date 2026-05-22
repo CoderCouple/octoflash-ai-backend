@@ -97,3 +97,18 @@ class RenderError(HTTPException):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Render failed: {message}",
         )
+
+
+class PlanLimitExceededError(HTTPException):
+    """Org has reached its plan's limit for a resource. Returns 402."""
+
+    def __init__(
+        self, resource: str, current: int, maximum: int, plan: str
+    ):
+        super().__init__(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Plan '{plan}' limit reached for {resource}: "
+                f"{current}/{maximum}. Upgrade to add more."
+            ),
+        )

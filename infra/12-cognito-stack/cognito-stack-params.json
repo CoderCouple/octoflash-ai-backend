@@ -1,0 +1,18 @@
+[
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "UserPoolDomainPrefix",
+    "ParameterValue": "octoflash-dev"
+  },
+  {
+    "ParameterKey": "CallbackURLs",
+    "ParameterValue": "http://localhost:3001/auth/callback,https://octoflash.ai/auth/callback"
+  },
+  {
+    "ParameterKey": "LogoutURLs",
+    "ParameterValue": "http://localhost:3001,https://octoflash.ai"
+  }
+]

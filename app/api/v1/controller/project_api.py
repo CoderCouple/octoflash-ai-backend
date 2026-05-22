@@ -1,13 +1,15 @@
 """Project API controller."""
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
-from app.api.v1.request.plan_request import PlanFromPromptRequest
+from app.api.v1.request.from_source_request import CreateProjectFromSourceRequest
 from app.api.v1.request.project_request import CreateProjectRequest, UpdateProjectRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
-from app.api.v1.response.plan_response import PlanFromPromptResponse
+from app.api.v1.response.from_source_response import CreateProjectFromSourceResponse
+from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.project_response import ProjectDetailResponse, ProjectResponse
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
@@ -32,13 +34,13 @@ async def create_project(
 
 @router.get("/projects", response_model=BaseResponse[PaginatedResponse[ProjectResponse]])
 async def list_projects(
-    owner_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     service: ProjectService = Depends(get_project_service),
 ):
     """List projects."""
-    projects, total = await service.list_projects(owner_id, offset, limit)
+    projects, total = await service.list_projects(user_id, offset, limit)
     page = PaginatedResponse(items=projects, total=total, offset=offset, limit=limit)
     return success_response(page, "Projects fetched")
 
@@ -75,26 +77,70 @@ async def delete_project(
 
 
 @router.post(
-    "/projects/{project_id}/plan",
-    response_model=BaseResponse[PlanFromPromptResponse],
-    status_code=201,
+    "/projects/from-source",
+    response_model=BaseResponse[CreateProjectFromSourceResponse],
+    status_code=202,
 )
-async def plan_scenes_from_prompt(
-    project_id: str,
-    body: PlanFromPromptRequest,
+async def create_project_from_source(
+    body: CreateProjectFromSourceRequest,
     service: ProjectService = Depends(get_project_service),
 ):
-    """Turn a freeform prompt into an ordered list of scenes, persisted in DB.
+    """Create a project from a source URL and kick off analyze on Temporal.
 
-    Synchronous (Claude call is ~1–3s). Returns the created SceneResponses plus
-    the planner's short reasoning. Does NOT trigger rendering — call
-    `POST /scenes/{id}/variations` per scene when you're ready to render.
+    Returns 202 immediately with the empty Project + a Job to poll. The
+    AnalyzeProjectWorkflow runs (download → frames → transcript → describer
+    → prompt_builder), writes the brief onto the Project, and marks status
+    `analyzed`. Frontend polls `GET /jobs/{job.id}` until done, then
+    re-fetches `GET /projects/{id}` to see the editable brief.
     """
-    result = await service.plan_scenes(
-        project_id=project_id,
-        prompt=body.prompt,
-        style_preference=body.style_preference,
-        max_scenes=body.max_scenes,
-        target_duration=body.target_duration,
+    result = await service.create_from_source(
+        source_url=str(body.source_url),
+        title=body.title,
     )
-    return success_response(result, "Scenes planned", 201)
+    return success_response(result, "Analyze workflow started", 202)
+
+
+@router.post(
+    "/projects/{project_id}/generate",
+    response_model=BaseResponse[list[WorkflowExecutionResponse]],
+    status_code=202,
+)
+async def generate_video(
+    project_id: str,
+    max_clips: int = Query(default=8, ge=1, le=20),
+    orientations: list[str] = Query(
+        default=["portrait", "landscape"],
+        description="Which orientations to render. Default: both.",
+    ),
+    service: ProjectService = Depends(get_project_service),
+):
+    """Kick off one GenerateVideoWorkflow per requested orientation.
+
+    Default produces BOTH `final_portrait_video_url` and
+    `final_landscape_video_url` on the Project (each with its own scene set).
+    Returns 202 with a list of executions — poll each at `/executions/:id`.
+    """
+    executions = await service.generate_video(
+        project_id, max_clips=max_clips, orientations=orientations,
+    )
+    return success_response(executions, "Generate workflow(s) started", 202)
+
+
+@router.get("/projects/{project_id}/preview")
+async def preview_final_video(
+    project_id: str,
+    orientation: str = Query(
+        default="portrait",
+        description="Which orientation's final MP4 to stream.",
+    ),
+    service: ProjectService = Depends(get_project_service),
+):
+    """Stream the project's final stitched MP4 for the chosen orientation.
+    404 if that orientation hasn't been generated yet."""
+    path = await service.get_final_video_path(project_id, orientation=orientation)
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=path.name,
+        headers={"Cache-Control": "no-cache"},
+    )

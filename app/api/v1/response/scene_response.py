@@ -1,25 +1,32 @@
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 
 class SceneResponse(BaseModel):
+    """A scene (= clip) in a project's plan."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     project_id: str
+    orientation: str  # "portrait" | "landscape"
     n: int
+
     title: str | None = None
-    template: str
-    params: dict[str, Any]
     prompt: str | None = None
     duration: float | None = None
-    style: str | None = None
-    motion: str | None = None
+
+    script_code: str | None = None
+    script_code_hash: str | None = None
+    script_file: str | None = None
+    voice_id_override: str | None = None
+
+    video_url: str | None = None
+    render_method: str | None = None
+    eval_score: int | None = None
+    eval_feedback: str | None = None
+
     status: str
-    selected_variation_id: str | None = None
-    extra_steps: list[dict[str, Any]] = []
-    mode: str = "structured"
     created_at: datetime
     updated_at: datetime

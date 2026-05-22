@@ -26,6 +26,14 @@ faster-whisper = "^1.0.0"
 yt-dlp = "^2025.1.15"
 google-api-python-client = "^2.150.0"
 temporalio = "^1.8.0"
+youtube-transcript-api = "^0.6.2"
+beautifulsoup4 = "^4.12.3"
+feedparser = "^6.0.11"
+lxml = "^5.3.0"
+pillow = "^11.0.0"
+manim-voiceover = {extras = ["elevenlabs"], version = "^0.3.7"}
+pyjwt = {extras = ["crypto"], version = "^2.8.0"}
+stripe = "^11.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
@@ -38,6 +46,16 @@ ruff = "^0.8.0"
 debugpy = "^1.8.0"
 aiosqlite = "^0.22.1"
 greenlet = "^3.4.0"
+
+# `manimgl` is only needed when running the /playground/render endpoint in
+# local (non-Docker) mode. Kept in its own optional group so day-to-day
+# `poetry install` stays small — opt in with `make install-playground` or
+# `poetry install --with playground`.
+[tool.poetry.group.playground]
+optional = true
+
+[tool.poetry.group.playground.dependencies]
+manimgl = "*"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

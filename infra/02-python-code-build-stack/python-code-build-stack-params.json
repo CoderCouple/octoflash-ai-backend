@@ -1,0 +1,26 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "octoflash-ai-backend"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "GitHubOrgName",
+    "ParameterValue": "CoderCouple"
+  },
+  {
+    "ParameterKey": "GitHubRepositoryName",
+    "ParameterValue": "octoflash-ai-backend"
+  },
+  {
+    "ParameterKey": "ECRRepositoryName",
+    "ParameterValue": "octoflash-ai-backend-ecr-repo"
+  },
+  {
+    "ParameterKey": "GitHubTokenSecretName",
+    "ParameterValue": "OCTOPOD-BACKEND-GITHUB-TOKEN"
+  }
+]

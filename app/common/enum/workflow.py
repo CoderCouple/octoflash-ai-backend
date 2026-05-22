@@ -1,14 +1,9 @@
-from enum import Enum
+"""Workflow-level enums.
 
+NOTE: WorkflowStatus lives in `execution.py` (alongside execution lineage)
+because the lifecycle is tightly coupled to runs. This file is intentionally
+sparse — old NodeKind/EdgeKind were removed when the node-type library
+(`workflow_node_type` table) replaced enum-based kind dispatch.
+"""
 
-class NodeKind(str, Enum):
-    START = "start"
-    SCENE = "scene"
-    BRANCH = "branch"
-    MERGE = "merge"
-    END = "end"
-
-
-class EdgeKind(str, Enum):
-    DEFAULT = "default"
-    BRANCH = "branch"
+from app.common.enum.execution import WorkflowStatus  # noqa: F401  (re-export)

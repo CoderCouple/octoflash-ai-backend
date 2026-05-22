@@ -8,9 +8,13 @@ __pycache__
 .ruff_cache
 .idea
 .vscode
-.env
+# Block all .env.* by default, then re-include the two files that need
+# to ship with the image. `.env.example` is documentation; `.env.dev` is
+# the baseline config for the dev ECS task (ECS env vars + secrets layer
+# on top of it at task start).
 .env.*
 !.env.example
+!.env.dev
 media
 renders
 *.mp4

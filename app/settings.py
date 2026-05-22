@@ -5,7 +5,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _detect_env_file() -> str:
-    """Load .env.local on macOS (dev laptop), .env.dev on Linux (cloud)."""
+    """Pick which .env to load based on host:
+
+      • macOS (your laptop)  →  .env.local
+      • Linux (ECS task)     →  .env.dev
+
+    On ECS the task definition's Environment + Secrets blocks still take
+    precedence — pydantic-settings layers env vars over the file values,
+    so the file is a baseline / fallback. Missing file is tolerated; reads
+    fall through to the process environment.
+    """
     return ".env.local" if platform.system() == "Darwin" else ".env.dev"
 
 
@@ -32,13 +41,15 @@ class Settings(BaseSettings):
     # API
     api_prefix: str = "/api/v1"
     allowed_origins: list[str] = [
-        "http://localhost:5173",  # Vite dev (frontend packages/web)
+        "http://localhost:5173",  # Vite dev (frontend packages/web — default port)
+        "http://localhost:5174",  # Vite dev (fallback when 5173 is taken)
         "http://localhost:3000",  # Next.js dev (pre-migration)
+        "http://localhost:8008",  # backend itself (Swagger UI ↔ API)
     ]
 
     # Temporal — durable workflow runner. Two ways to configure the client:
     #
-    # 1. Profile-based (preferred for local dev — keeps secrets out of .env):
+    # 1. Profile-based (preferred for local dev — keeps secrets out of .env.dev):
     #      Install Temporal CLI, then:
     #        temporal --profile cloud config set --prop address   --value '...tmprl.cloud:7233'
     #        temporal --profile cloud config set --prop namespace --value '<namespace>'
@@ -59,13 +70,84 @@ class Settings(BaseSettings):
     temporal_task_queue: str = "octoflash-renders"
     temporal_workflow_id_prefix: str = "octoflash"
 
+    # Default user id services attribute new rows to until auth is wired into
+    # the request layer. Mirrors the seed row in sql/schema/0001_octoflash_schema.sql.
+    default_user_id: str = "user_00000000-0000-0000-0000-000000000001"
+
+    # AWS Cognito — JWT verification only. Signup/login/MFA all happen in the
+    # Hosted UI; the backend just validates the resulting Bearer token.
+    cognito_user_pool_id: str = ""
+    cognito_region: str = "us-west-2"
+    cognito_app_client_id: str = ""
+
+    # Stripe — billing. All Stripe interactions are no-ops while
+    # `stripe_secret_key` is empty (dev / test stays uncoupled). Webhook
+    # signing secret is required for any real Stripe event delivery.
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id_pro: str = ""
+    stripe_price_id_enterprise: str = ""
+
+    # Playground — user-supplied ManimGL code (the /playground page on the FE).
+    #
+    # Two modes, picked by `playground_sandbox_mode`:
+    #
+    #   "docker"  (default, PRODUCTION) — run inside a hardened container
+    #             built via `make playground-image`. Isolation: network=none,
+    #             non-root, capped RAM/CPU, only the per-render dir mounted
+    #             RW, host wall-clock timeout. If Docker isn't reachable the
+    #             endpoint returns 503 — never silently falls back.
+    #
+    #   "local"   (DEV ONLY) — invoke `manimgl` directly on the host. No
+    #             isolation. Submitted code runs with the server's user and
+    #             full network access. Useful for laptop iteration when you
+    #             trust everyone who can reach the API.
+    #
+    # Never set `playground_sandbox_mode=local` on a deployment exposed to
+    # the public internet.
+    playground_sandbox_mode: str = "docker"
+    playground_docker_bin: str = "docker"
+    # ManimGL (3Blue1Brown) — image built from infra/playground-runner/Dockerfile
+    # via `make playground-image`. ManimGL is required because the /playground
+    # frontend presets use `from manimlib import *`.
+    playground_docker_image: str = "octoflash-playground-runner:latest"
+    playground_local_bin: str = "manimgl"
+    playground_timeout_seconds: int = 120
+    playground_memory_limit: str = "1g"
+    playground_cpu_limit: str = "1.0"
+    playground_pids_limit: int = 128
+
     @property
     def temporal_is_cloud(self) -> bool:
         return bool(self.temporal_api_key)
 
-    # Anthropic (planner LLM)
+    @property
+    def cognito_jwks_url(self) -> str:
+        return (
+            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/"
+            f"{self.cognito_user_pool_id}/.well-known/jwks.json"
+        )
+
+    @property
+    def cognito_issuer(self) -> str:
+        return (
+            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/"
+            f"{self.cognito_user_pool_id}"
+        )
+
+    # Anthropic (script generator + describer + evaluator)
     anthropic_api_key: str = ""
     planner_model: str = "claude-sonnet-4-5"
+    # The script generator uses Opus for long structured Manim code generation.
+    script_model: str = "claude-opus-4-7"
+
+    # ElevenLabs (voiceover via manim-voiceover inside the Manim subprocess)
+    eleven_api_key: str = ""
+
+    # Local storage root for source videos, extracted frames, generated scripts,
+    # render outputs, voiceover MP3 cache, etc. Mirrored S3 keys live under
+    # the same relative tree.
+    local_storage_path: str = "./storage"
 
     # AWS / S3
     aws_region: str = "us-west-2"
@@ -88,6 +170,12 @@ class Settings(BaseSettings):
     manim_quality_preview: str = "low_quality"
     manim_quality_export: str = "high_quality"
     manim_output_dir: str = "./media"
+
+    # Credential vault encryption key (Fernet, base64-encoded 32 bytes). When
+    # empty (dev default) values are stored plaintext — a startup warning is
+    # logged. Generate with: `python -c "from cryptography.fernet import
+    # Fernet; print(Fernet.generate_key().decode())"`.
+    credential_encryption_key: str = ""
 
     model_config = SettingsConfigDict(
         env_file=_detect_env_file(),

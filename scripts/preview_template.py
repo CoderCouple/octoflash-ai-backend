@@ -195,10 +195,10 @@ def _run_watch_mode() -> None:
             current = _max_mtime(watch_path)
             if current > last:
                 last = current
-                print("\n── change detected ──")
+                print("\n ── change detected ──")
                 subprocess.run(cmd)
     except KeyboardInterrupt:
-        print("\n▶ Watch mode stopped.")
+        print("\n ▶ Watch mode stopped.")
 
 
 def main() -> None:

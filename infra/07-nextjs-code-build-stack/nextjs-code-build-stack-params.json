@@ -1,0 +1,30 @@
+[
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "octoflash-ai-frontend"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "GitHubOrgName",
+    "ParameterValue": "CoderCouple"
+  },
+  {
+    "ParameterKey": "GitHubRepositoryName",
+    "ParameterValue": "octoflash-ai-frontend"
+  },
+  {
+    "ParameterKey": "ECRRepositoryName",
+    "ParameterValue": "octoflash-ai-frontend-dev-ecr-repo"
+  },
+  {
+    "ParameterKey": "AWSRegion",
+    "ParameterValue": "us-west-2"
+  },
+  {
+    "ParameterKey": "GitHubTokenSecretName",
+    "ParameterValue": "OCTOPOD-BACKEND-GITHUB-TOKEN"
+  }
+]

@@ -21,7 +21,7 @@ S3 (renders/exports) · Poetry · Python 3.11.
 
 ```bash
 poetry install
-cp .env.example .env.local        # tweak DB / API keys
+cp .env.dev.example .env.dev.local        # tweak DB / API keys
 make docker-db                    # bring up Postgres + pgAdmin
 make migrate                      # apply Alembic migrations
 make dev                          # uvicorn on :8000

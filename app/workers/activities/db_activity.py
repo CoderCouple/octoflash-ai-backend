@@ -1,15 +1,21 @@
 """
-DB write activities — job status updates and variation inserts.
+DB write activities — execution-lineage updates.
 
-Each opens its own short-lived async session (not the request-scoped one) so
-Temporal can retry the activity on its own schedule without leaning on
-FastAPI's lifecycle.
+Bridges Temporal workflows to the workflow_execution + execution_phase
+tables. Status values on the input use canonical `ExecutionStatus` strings
+(`PENDING` | `RUNNING` | `COMPLETED` | `FAILED` | `CANCELED` | `TERMINATED` |
+`TIMED_OUT`); the activity constructs the enum directly. No legacy aliasing.
+
+The legacy field name `log_entry` is preserved on the input — each entry
+becomes a completed `execution_phase` row named after `log_entry["step"]`,
+with the full dict in `outputs`. A richer "begin phase → heartbeat → complete
+phase" surface can replace this when workflows are rewritten.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,18 +24,14 @@ from temporalio import activity
 # Side-effect import: ensures every model is in Base.metadata so FK resolution
 # works inside activity-owned sessions (which don't share the request lifecycle).
 import app.model  # noqa: F401
+from app.common.enum.execution import ExecutionPhaseStatus, ExecutionStatus
 from app.db.engine import get_async_engine
-from app.db.repository.job_repository import JobRepository
-from app.db.repository.variation_repository import VariationRepository
-from app.model.variation_model import Variation
+from app.db.repository.workflow_execution_repository import WorkflowExecutionRepository
+from app.model.execution_phase_model import ExecutionPhase
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
-    """Build a fresh session factory bound to the worker's engine.
-
-    Not cached because the activity may be retried after the engine is
-    disposed in some failure scenarios.
-    """
+    """Build a fresh session factory bound to the worker's engine."""
     return async_sessionmaker(
         bind=get_async_engine(),
         class_=AsyncSession,
@@ -40,83 +42,63 @@ def _session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 @dataclass
-class UpdateJobInput:
-    job_id: str
-    status: str | None = None
-    progress: int | None = None
-    log_entry: dict[str, Any] | None = None
-    output_url: str | None = None
+class UpdateExecutionInput:
+    execution_id: str
+    status: str | None = None  # ExecutionStatus value, e.g. "RUNNING"
+    log_entry: dict[str, Any] | None = None  # becomes an execution_phase row
     started_at: datetime | None = None
-    finished_at: datetime | None = None
-    workflow_id: str | None = None
-    run_id: str | None = None
+    completed_at: datetime | None = None
+    temporal_workflow_id: str | None = None
+    temporal_run_id: str | None = None
 
 
-@activity.defn(name="update_job")
-async def update_job_activity(payload: UpdateJobInput) -> None:
-    """Patch the Job row. Called at workflow status transitions."""
+@activity.defn(name="update_execution")
+async def update_execution_activity(payload: UpdateExecutionInput) -> None:
+    """Patch the WorkflowExecution row and (if a log_entry is present) append
+    a completed ExecutionPhase row for the step."""
     factory = _session_factory()
     async with factory() as session:
-        repo = JobRepository(session)
-        job = await repo.get_by_id(payload.job_id)
-        if job is None:
-            # Don't raise — the workflow shouldn't keep retrying a bad job id.
-            activity.logger.warning("update_job: job %s not found", payload.job_id)
+        repo = WorkflowExecutionRepository(session)
+        execution = await repo.get_by_id(payload.execution_id)
+        if execution is None:
+            activity.logger.warning(
+                "update_execution: execution %s not found", payload.execution_id
+            )
             return
 
+        new_status: ExecutionStatus | None = None
         if payload.status is not None:
-            job.status = payload.status
-        if payload.progress is not None:
-            job.progress = payload.progress
-        if payload.output_url is not None:
-            job.output_url = payload.output_url
-        if payload.started_at is not None:
-            job.started_at = payload.started_at
-        if payload.finished_at is not None:
-            job.finished_at = payload.finished_at
-        if payload.workflow_id is not None:
-            job.workflow_id = payload.workflow_id
-        if payload.run_id is not None:
-            job.run_id = payload.run_id
-        if payload.log_entry is not None:
-            # Postgres JSONB — copy + append so SQLAlchemy detects the change.
-            logs = list(job.logs or [])
-            logs.append(payload.log_entry)
-            job.logs = logs
+            try:
+                new_status = ExecutionStatus(payload.status)
+            except ValueError:
+                activity.logger.warning(
+                    "update_execution: unknown status %r — leaving unchanged",
+                    payload.status,
+                )
 
-        await repo.update(job)
-        await session.commit()
-
-
-@dataclass
-class InsertVariationInput:
-    scene_id: str
-    params_snapshot: dict[str, Any]
-    video_url: str
-    audio_url: str | None
-    duration: float
-    frame_count: int
-    file_size: int
-    status: str = "ready"
-
-
-@activity.defn(name="insert_variation")
-async def insert_variation_activity(payload: InsertVariationInput) -> str:
-    """Insert a Variation row after a successful render. Returns the variation id."""
-    factory = _session_factory()
-    async with factory() as session:
-        repo = VariationRepository(session)
-        variation = Variation(
-            scene_id=payload.scene_id,
-            params_snapshot=payload.params_snapshot,
-            video_url=payload.video_url,
-            audio_url=payload.audio_url,
-            duration=payload.duration,
-            frame_count=payload.frame_count,
-            file_size=payload.file_size,
-            status=payload.status,
-            rendered_at=datetime.utcnow(),
+        await repo.patch_status(
+            execution.id,
+            status=new_status,
+            temporal_workflow_id=payload.temporal_workflow_id,
+            temporal_run_id=payload.temporal_run_id,
+            started_at=payload.started_at,
+            completed_at=payload.completed_at,
         )
-        await repo.create(variation)
+
+        if payload.log_entry is not None:
+            existing = await repo.list_phases(execution.id)
+            phase = ExecutionPhase(
+                workflow_execution_id=execution.id,
+                user_id=execution.user_id,
+                status=ExecutionPhaseStatus.COMPLETED,
+                number=len(existing) + 1,
+                name=str(payload.log_entry.get("step") or f"step {len(existing) + 1}"),
+                outputs=payload.log_entry,
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+                temporal_activity_type=activity.info().activity_type,
+                temporal_attempt=activity.info().attempt,
+            )
+            await repo.create_phase(phase)
+
         await session.commit()
-        return variation.id

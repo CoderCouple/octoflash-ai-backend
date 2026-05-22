@@ -20,11 +20,20 @@ class ProjectRepository:
         return result.scalar_one_or_none()
 
     async def list_all(
-        self, owner_id: str | None = None, offset: int = 0, limit: int = 20
+        self,
+        user_id: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+        org_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> tuple[list[Project], int]:
         base = select(Project).where(Project.is_deleted == False)  # noqa: E712
-        if owner_id is not None:
-            base = base.where(Project.owner_id == owner_id)
+        if user_id is not None:
+            base = base.where(Project.user_id == user_id)
+        if org_id is not None:
+            base = base.where(Project.org_id == org_id)
+        if workspace_id is not None:
+            base = base.where(Project.workspace_id == workspace_id)
 
         count_result = await self.db.execute(
             select(func.count()).select_from(base.subquery())
@@ -35,6 +44,13 @@ class ProjectRepository:
             base.order_by(Project.created_at.desc()).offset(offset).limit(limit)
         )
         return list(result.scalars().all()), total
+
+    async def list_by_workspace(
+        self, workspace_id: str, offset: int = 0, limit: int = 20
+    ) -> tuple[list[Project], int]:
+        return await self.list_all(
+            workspace_id=workspace_id, offset=offset, limit=limit
+        )
 
     async def create(self, project: Project) -> Project:
         self.db.add(project)

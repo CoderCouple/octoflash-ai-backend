@@ -1,3 +1,9 @@
+"""Scene — a clip in a Project's plan. One Scene = one Manim render = one MP4 segment.
+
+`status` and `render_method` switched to native PG enums (matched against the
+Python str-Enum classes in app.common.enum.scene).
+"""
+
 import uuid
 
 from sqlalchemy import (
@@ -9,10 +15,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import func
 
+from app.common.enum.scene import Orientation, RenderMethod, SceneStatus
 from app.db.base import Base
 
 
@@ -23,27 +30,62 @@ def generate_prefixed_uuid() -> str:
 class Scene(Base):
     __tablename__ = "scene"
     __table_args__ = (
-        UniqueConstraint("project_id", "n", name="uq_scene_project_n"),
+        UniqueConstraint(
+            "project_id", "orientation", "n", name="uq_scene_project_orientation_n"
+        ),
     )
 
     id = Column(String(), primary_key=True, default=generate_prefixed_uuid, nullable=False)
-    project_id = Column(String(), ForeignKey("project.id"), nullable=False, index=True)
-    n = Column(Integer, nullable=False)  # order within project
+    project_id = Column(
+        String(),
+        ForeignKey("project.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    orientation = Column(
+        SAEnum(
+            Orientation,
+            name="orientation_enum",
+            create_type=False,
+            values_callable=lambda e: [v.value for v in e],
+        ),
+        nullable=False,
+        default=Orientation.PORTRAIT,
+    )
+    n = Column(Integer, nullable=False)
+
     title = Column(String(255), nullable=True)
-    template = Column(String(64), nullable=False)  # template id, e.g. "title_reveal"
-    params = Column(JSONB, nullable=False, default=dict)
     prompt = Column(Text(), nullable=True)
-    duration = Column(Float, nullable=True)  # seconds; None = template default
-    style = Column(String(32), nullable=True)  # StylePreset value
-    motion = Column(String(32), nullable=True)
-    status = Column(String(16), nullable=False, default="draft")  # SceneStatus
-    selected_variation_id = Column(String(), nullable=True)
+    duration = Column(Float, nullable=True)
 
-    # NL editing divergence — populated only when the user has applied an instruction.
-    # Merged with the template's steps at render time by TemplateRenderer.
-    extra_steps = Column(JSONB, nullable=False, default=list)
-    # "structured" = scene == (template, params); "advanced" = extra_steps non-empty.
-    mode = Column(String(16), nullable=False, default="structured")
+    script_code = Column(Text(), nullable=True)
+    script_code_hash = Column(String(64), nullable=True, index=True)
+    script_file = Column(Text(), nullable=True)
+    voice_id_override = Column(String(64), nullable=True)
 
-    created_at = Column(TIMESTAMP(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(TIMESTAMP(timezone=True), default=func.now(), nullable=False)
+    video_url = Column(Text(), nullable=True)
+    render_method = Column(
+        SAEnum(
+            RenderMethod,
+            name="render_method_enum",
+            create_type=False,
+            values_callable=lambda e: [v.value for v in e],
+        ),
+        nullable=True,
+    )
+    eval_score = Column(Integer, nullable=True)
+    eval_feedback = Column(Text(), nullable=True)
+
+    status = Column(
+        SAEnum(
+            SceneStatus,
+            name="scene_status_enum",
+            create_type=False,
+            values_callable=lambda e: [v.value for v in e],
+        ),
+        nullable=False,
+        default=SceneStatus.DRAFT,
+    )
+
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, default=func.now())

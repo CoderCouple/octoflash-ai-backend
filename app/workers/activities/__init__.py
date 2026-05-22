@@ -1,34 +1,37 @@
 """
 Activity registry. The worker imports `ALL_ACTIVITIES` and registers them.
 
-Activities are where side-effectful work happens (Manim render, FFmpeg, S3
-upload, DB writes, HTTP calls). Each is automatically retried by Temporal
-per its `RetryPolicy` if it raises. Workflows compose activities — they're
-deterministic orchestrators and must not do IO themselves.
+Activities are where side-effectful work happens (Claude calls, Manim render,
+ffmpeg, S3 upload, DB writes). Temporal retries each per its `RetryPolicy`
+on failure. Workflows compose activities — they're deterministic orchestrators
+and must not do IO themselves.
 """
 
-from app.workers.activities.clip_resolve_activity import (
-    resolve_project_clips_activity,
-)
-from app.workers.activities.db_activity import (
-    insert_variation_activity,
-    update_job_activity,
-)
-from app.workers.activities.ffmpeg_activity import concat_clips_activity
-from app.workers.activities.render_activity import render_variation_activity
-from app.workers.activities.storage_activity import upload_render_activity
-from app.workers.activities.whisper_activity import (
-    download_audio_activity,
-    transcribe_audio_activity,
+from app.workers.activities.analyze_activity import analyze_source_activity
+from app.workers.activities.db_activity import update_execution_activity
+from app.workers.activities.ffmpeg_concat_activity import ffmpeg_concat_activity
+from app.workers.activities.generate_clip_activity import generate_clip_activity
+from app.workers.activities.plan_activity import plan_clips_activity
+from app.workers.activities.project_activity import (
+    create_scenes_activity,
+    get_scene_cache_activity,
+    persist_clip_result_activity,
+    update_project_activity,
 )
 
 ALL_ACTIVITIES = [
-    render_variation_activity,
-    upload_render_activity,
-    concat_clips_activity,
-    download_audio_activity,
-    transcribe_audio_activity,
-    update_job_activity,
-    insert_variation_activity,
-    resolve_project_clips_activity,
+    # Analyze pipeline
+    analyze_source_activity,
+    # Plan + persist
+    plan_clips_activity,
+    create_scenes_activity,
+    # Per-clip generate (fans out via asyncio.gather)
+    generate_clip_activity,
+    get_scene_cache_activity,
+    persist_clip_result_activity,
+    # Stitch
+    ffmpeg_concat_activity,
+    # Project + execution-lineage status writes
+    update_project_activity,
+    update_execution_activity,
 ]

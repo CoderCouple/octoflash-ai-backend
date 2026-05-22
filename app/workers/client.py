@@ -8,7 +8,7 @@ using the same code. Mode is env-driven:
         temporal --profile <name> config set --prop namespace --value '...'
         temporal --profile <name> config set --prop api_key   --value '...'
       Profiles are read from the SDK's standard TOML config (see locate_config_file).
-      Keeps API keys off `.env*` files.
+      Keeps API keys off `.env.dev*` files.
 
   Env-var fallback:
       TEMPORAL_ADDRESS=localhost:7233 / <ns>.<account>.tmprl.cloud:7233

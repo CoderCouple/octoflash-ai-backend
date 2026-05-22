@@ -1,0 +1,62 @@
+[
+  {
+    "ParameterKey": "OrganizationName",
+    "ParameterValue": "octoflash"
+  },
+  {
+    "ParameterKey": "DomainName",
+    "ParameterValue": "octoflash.ai"
+  },
+  {
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "octoflash"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "ClusterMinSize",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "ClusterMaxSize",
+    "ParameterValue": "2"
+  },
+  {
+    "ParameterKey": "ClusterRollSize",
+    "ParameterValue": "1"
+  },
+  {
+    "ParameterKey": "NetworkStackName",
+    "ParameterValue": "octopodai-dev-network-stack"
+  },
+  {
+    "ParameterKey": "DockerRepositoryName",
+    "ParameterValue": "octoflash-ai-frontend-dev-ecr-repo"
+  },
+  {
+    "ParameterKey": "SSHKeyName",
+    "ParameterValue": "demokey"
+  },
+  {
+    "ParameterKey": "ClusterStackName",
+    "ParameterValue": "octopodai-dev-ecs-cluster"
+  },
+  {
+    "ParameterKey": "PublicHostedZoneName",
+    "ParameterValue": "octoflash.ai."
+  },
+  {
+    "ParameterKey": "PublicHostedZoneId",
+    "ParameterValue": "Z00628722L7RGH80G6C89"
+  },
+  {
+    "ParameterKey": "DomainNameForCertificate",
+    "ParameterValue": "octoflash.ai"
+  },
+  {
+    "ParameterKey": "ServiceDiscoveryName",
+    "ParameterValue": "web"
+  }
+]
