@@ -7,14 +7,23 @@ ENV POETRY_VERSION=1.8.0 \
 WORKDIR /app
 
 # System deps:
-#   gcc / libpq-dev  -> psycopg/asyncpg
-#   ffmpeg           -> stitching scenes + audio
-#   libcairo2 / libpango / pkg-config -> Manim native deps
-#   libsndfile1 / libsox-fmt-all      -> Whisper audio I/O
+#   gcc / build-essential / libpq-dev   -> psycopg / asyncpg + manimpango source build
+#   ffmpeg                              -> stitching scenes + audio
+#   libcairo2 + libcairo2-dev           -> Manim Cairo backend (runtime + headers)
+#   libpango-1.0-0 + libpango1.0-dev    -> manimpango needs pangocairo.pc via pkg-config
+#                                          (build-from-source; no prebuilt wheel for slim)
+#   libpangocairo-1.0-0                 -> Pango Cairo runtime
+#   libfreetype6                        -> font rendering
+#   libsndfile1                         -> Whisper audio I/O
+#   pkg-config                          -> manimpango's setup.py uses pkg-config to discover
+#                                          pangocairo headers + version
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev curl ffmpeg \
-    libcairo2 libcairo2-dev libpango-1.0-0 libpangocairo-1.0-0 pkg-config \
+    gcc build-essential libpq-dev curl ffmpeg \
+    libcairo2 libcairo2-dev \
+    libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 \
+    libfreetype6 \
     libsndfile1 \
+    pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
