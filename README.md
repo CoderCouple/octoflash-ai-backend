@@ -177,5 +177,5 @@ Empty / missing → safe defaults. The app boots cleanly even when most third-pa
 
 ## Repos
 
-- Backend (this repo): <https://github.com/CoderCouple/octoflash-ai-backend>
+- Backend: <https://github.com/CoderCouple/octoflash-ai-backend>
 - Frontend: <https://github.com/CoderCouple/octoflash-ai-frontend>
