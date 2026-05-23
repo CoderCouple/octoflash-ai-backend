@@ -12,6 +12,7 @@ from app.common.enum.execution import WorkflowKind
 from app.common.exceptions import EntityNotFoundError
 from app.db.repository.project_repository import ProjectRepository
 from app.db.repository.scene_repository import SceneRepository
+from app.db.repository.workflow_repository import WorkflowRepository
 from app.model.project_model import Project
 from app.service.source_fetcher_service import (
     UnsupportedSourceError,
@@ -102,10 +103,59 @@ class ProjectService:
         return ProjectResponse.model_validate(project)
 
     async def delete_project(self, project_id: str) -> None:
+        """Delete a project end-to-end.
+
+        Cleanup steps (best-effort; one failure must not block the rest):
+          1. Find the 1:1 workflow row; soft-delete it so /workflows/{id} 404s.
+          2. List every in-flight workflow_execution for the workflow and
+             terminate the Temporal handle + mark the row CANCELED. Without
+             this, deleting a queued project would leave a runaway Temporal
+             workflow that re-writes status onto the soft-deleted project.
+          3. Soft-delete the project row.
+          4. rmtree the project's local storage dir (source video, frames,
+             generated scripts, render artifacts). Best-effort — if files are
+             held open / on a read-only mount we log and move on.
+
+        Scene rows have no `is_deleted` column so they aren't soft-deleted
+        explicitly. They become unreachable because every entry point that
+        lists scenes scopes by project, and the project is now hidden.
+        """
+        import logging
+        import shutil
+        log = logging.getLogger(__name__)
+
         project = await self.project_repo.get_by_id(project_id)
         if not project:
             raise EntityNotFoundError("Project", project_id)
+
+        workflow_repo = WorkflowRepository(self.db)
+        workflow = await workflow_repo.get_by_project_id(project_id)
+        if workflow is not None:
+            execution_service = WorkflowExecutionService(self.db)
+            in_flight = await execution_service.execution_repo.list_in_flight_for_workflow(
+                workflow.id
+            )
+            if in_flight:
+                await execution_service.cancel_in_flight(
+                    in_flight, reason=f"Project {project_id} deleted",
+                )
+            workflow.is_deleted = True
+            await workflow_repo.update(workflow)
+
         await self.project_repo.soft_delete(project)
+        await self.db.commit()
+
+        storage_root = Path(settings.local_storage_path or "storage").resolve()
+        project_dir = storage_root / "projects" / project_id
+        if project_dir.exists():
+            try:
+                shutil.rmtree(project_dir)
+                log.info("delete_project: removed storage dir %s", project_dir)
+            except OSError as e:
+                log.warning(
+                    "delete_project: failed to rmtree %s (%s) — DB delete still applied",
+                    project_dir, e,
+                )
 
     async def get_final_video_path(
         self, project_id: str, orientation: str = "portrait"

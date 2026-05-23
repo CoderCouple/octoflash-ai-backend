@@ -92,6 +92,58 @@ class WorkflowExecutionService:
         )
         return await self.execution_repo.create(execution)
 
+    async def cancel_in_flight(
+        self,
+        executions: list[WorkflowExecution],
+        *,
+        reason: str = "Parent entity deleted",
+    ) -> int:
+        """Best-effort terminate any in-flight Temporal workflows + flip DB rows.
+
+        For each row:
+          1. Call `handle.terminate(reason=…)` against Temporal. Swallow per-row
+             errors (workflow already completed, Temporal unreachable, etc) —
+             one stuck handle must not block the delete that asked for cleanup.
+          2. Patch the DB row to status=CANCELED + completed_at=now() so the
+             FE reflects reality even if Temporal was unreachable.
+
+        Returns the count of rows actually transitioned.
+        """
+        if not executions:
+            return 0
+        try:
+            from app.workers.client import get_temporal_client
+            client = await get_temporal_client()
+        except Exception as e:  # noqa: BLE001
+            client = None
+            import logging
+            logging.getLogger(__name__).warning(
+                "cancel_in_flight: temporal client unavailable (%s) — "
+                "DB rows will be marked CANCELED without terminating Temporal",
+                e,
+            )
+
+        canceled = 0
+        for ex in executions:
+            if client is not None and ex.temporal_workflow_id:
+                try:
+                    handle = client.get_workflow_handle(ex.temporal_workflow_id)
+                    await handle.terminate(reason=reason)
+                except Exception as e:  # noqa: BLE001
+                    import logging
+                    logging.getLogger(__name__).info(
+                        "cancel_in_flight: terminate(%s) raised (%s) — "
+                        "DB row will still be marked CANCELED",
+                        ex.temporal_workflow_id, e,
+                    )
+            await self.execution_repo.patch_status(
+                ex.id,
+                status=ExecutionStatus.CANCELED,
+                completed_at=datetime.now(timezone.utc),
+            )
+            canceled += 1
+        return canceled
+
     async def stamp_handle(
         self,
         execution_id: str,

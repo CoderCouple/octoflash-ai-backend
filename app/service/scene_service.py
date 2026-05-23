@@ -92,10 +92,56 @@ class SceneService:
         return SceneResponse.model_validate(scene)
 
     async def delete_scene(self, scene_id: str) -> None:
+        """Delete one scene + clean up everything that points at it.
+
+        Cleanup:
+          1. Find the project's workflow, then any in-flight workflow_execution
+             whose triggering DAG node was this scene → terminate Temporal +
+             mark CANCELED.
+          2. Hard-delete the scene. FK ON DELETE SET NULL on
+             workflow_node_instance.scene_id zeroes the DAG node's link
+             automatically; the placeholder node stays on the canvas so the
+             user can choose to delete it or re-render.
+          3. Best-effort rmtree of any per-scene files (generated script,
+             intermediate renders) under storage/scripts/{scene_id}/.
+        """
+        import logging
+        import shutil
+        from app.db.repository.workflow_repository import WorkflowRepository
+        log = logging.getLogger(__name__)
+
         scene = await self.scene_repo.get_by_id(scene_id)
         if not scene:
             raise EntityNotFoundError("Scene", scene_id)
+
+        workflow_repo = WorkflowRepository(self.db)
+        workflow = await workflow_repo.get_by_project_id(scene.project_id)
+        if workflow is not None:
+            execution_service = WorkflowExecutionService(self.db)
+            in_flight = await execution_service.execution_repo.list_in_flight_for_scene(
+                scene_id=scene_id, workflow_id=workflow.id,
+            )
+            if in_flight:
+                await execution_service.cancel_in_flight(
+                    in_flight, reason=f"Scene {scene_id} deleted",
+                )
+
         await self.scene_repo.delete(scene)
+        await self.db.commit()
+
+        # Best-effort filesystem cleanup. Scene scripts live under
+        # ./storage/scripts/{scene_id}/ per script_generator_service.
+        storage_root = Path(settings.local_storage_path or "storage").resolve()
+        scripts_dir = storage_root / "scripts" / scene_id
+        if scripts_dir.exists():
+            try:
+                shutil.rmtree(scripts_dir)
+                log.info("delete_scene: removed %s", scripts_dir)
+            except OSError as e:
+                log.warning(
+                    "delete_scene: failed to rmtree %s (%s) — DB delete still applied",
+                    scripts_dir, e,
+                )
 
     async def regenerate_clip(self, scene_id: str) -> WorkflowExecutionResponse:
         """Kick off RegenerateClipWorkflow — re-renders just this clip + re-stitches the project.

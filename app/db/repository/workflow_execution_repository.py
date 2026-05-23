@@ -32,6 +32,61 @@ class WorkflowExecutionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_in_flight_for_workflow(
+        self, workflow_id: str
+    ) -> list[WorkflowExecution]:
+        """All executions still PENDING or RUNNING for a workflow.
+
+        Used by the delete code path so we can terminate Temporal handles
+        before tearing the workflow down.
+        """
+        result = await self.db.execute(
+            select(WorkflowExecution).where(
+                WorkflowExecution.workflow_id == workflow_id,
+                WorkflowExecution.is_deleted == False,  # noqa: E712
+                WorkflowExecution.status.in_(["PENDING", "RUNNING"]),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_in_flight_for_node(
+        self, node_instance_id: str
+    ) -> list[WorkflowExecution]:
+        """All in-flight executions tied to a specific DAG node."""
+        result = await self.db.execute(
+            select(WorkflowExecution).where(
+                WorkflowExecution.node_instance_id == node_instance_id,
+                WorkflowExecution.is_deleted == False,  # noqa: E712
+                WorkflowExecution.status.in_(["PENDING", "RUNNING"]),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_in_flight_for_scene(
+        self, scene_id: str, workflow_id: str
+    ) -> list[WorkflowExecution]:
+        """In-flight executions whose triggering node points at this scene.
+
+        Uses a join through workflow_node_instance.scene_id so we don't need
+        a denormalized scene_id column on workflow_execution.
+        """
+        from app.model.workflow_node_instance_model import WorkflowNodeInstance
+
+        result = await self.db.execute(
+            select(WorkflowExecution)
+            .join(
+                WorkflowNodeInstance,
+                WorkflowNodeInstance.id == WorkflowExecution.node_instance_id,
+            )
+            .where(
+                WorkflowNodeInstance.scene_id == scene_id,
+                WorkflowExecution.workflow_id == workflow_id,
+                WorkflowExecution.is_deleted == False,  # noqa: E712
+                WorkflowExecution.status.in_(["PENDING", "RUNNING"]),
+            )
+        )
+        return list(result.scalars().all())
+
     async def list_for_workflow(
         self, workflow_id: str, offset: int = 0, limit: int = 50
     ) -> tuple[list[WorkflowExecution], int]:

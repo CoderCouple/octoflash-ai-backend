@@ -16,8 +16,11 @@ from app.api.v1.request.workflow_request import PutWorkflowRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.workflow_response import WorkflowResponse
+from app.common.exceptions import EntityNotFoundError
+from app.db.repository.workflow_repository import WorkflowRepository
 from app.db.session import get_db
 from app.service.node_runner_service import NodeRunnerService
+from app.service.project_service import ProjectService
 from app.service.workflow_service import WorkflowService
 
 router = APIRouter(tags=[Tags.Workflow])
@@ -79,6 +82,48 @@ async def put_workflow(
     """
     result = await service.put_definition(workflow_id, body)
     return success_response(result, "Workflow saved")
+
+
+@router.delete(
+    "/workflows/{workflow_id}",
+    response_model=BaseResponse,
+)
+async def delete_workflow(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete the workflow AND its parent project (they're 1:1).
+
+    Cascades through the full cleanup chain in ProjectService.delete_project:
+    in-flight Temporal workflows terminated, executions canceled, project +
+    workflow soft-deleted, local storage rmtree'd.
+    """
+    workflow = await WorkflowRepository(db).get_by_id(workflow_id)
+    if workflow is None:
+        raise EntityNotFoundError("Workflow", workflow_id)
+    await ProjectService(db).delete_project(workflow.project_id)
+    return success_response(None, "Workflow + project deleted")
+
+
+@router.delete(
+    "/workflows/{workflow_id}/nodes/{node_instance_id}",
+    response_model=BaseResponse,
+)
+async def delete_workflow_node(
+    workflow_id: str,
+    node_instance_id: str,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Delete one DAG node + its edges, terminate any in-flight runs for it.
+
+    Cancels (Temporal terminate + DB CANCELED) every workflow_execution
+    whose node_instance_id matches. Strips the node + touching edges from
+    workflow.definition; hard-deletes the projection row (FK CASCADE drops
+    touching edge rows). Historical execution rows survive via
+    `workflow_execution.node_instance_id ON DELETE SET NULL`.
+    """
+    await service.delete_node(workflow_id, node_instance_id)
+    return success_response(None, "Node deleted")
 
 
 @router.post(

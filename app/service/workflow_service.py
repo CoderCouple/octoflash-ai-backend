@@ -129,6 +129,56 @@ class WorkflowService:
 
         return await self._to_response(workflow)
 
+    # ── deletes ─────────────────────────────────────────────────────────
+
+    async def delete_node(self, workflow_id: str, node_instance_id: str) -> None:
+        """Delete one node from the workflow + clean up.
+
+        Steps:
+          1. Cancel any in-flight workflow_execution whose node_instance_id
+             matches (terminate Temporal + mark CANCELED).
+          2. Edit workflow.definition: drop the node + every edge that
+             touches it. The JSONB blob is the source of truth.
+          3. Hard-delete the workflow_node_instance row. FK ON DELETE CASCADE
+             drops the projection edges automatically; the workflow_execution
+             FK is ON DELETE SET NULL so historical run rows stay queryable.
+        """
+        from app.service.workflow_execution_service import WorkflowExecutionService
+
+        workflow = await self.workflow_repo.get_by_id(workflow_id)
+        if workflow is None:
+            raise EntityNotFoundError("Workflow", workflow_id)
+        node = await self.workflow_repo.get_node_instance_by_id(node_instance_id)
+        if node is None or node.workflow_id != workflow_id:
+            raise EntityNotFoundError("WorkflowNodeInstance", node_instance_id)
+
+        # 1. Terminate in-flight executions tied to this node.
+        execution_service = WorkflowExecutionService(self.db)
+        in_flight = await execution_service.execution_repo.list_in_flight_for_node(
+            node_instance_id
+        )
+        if in_flight:
+            await execution_service.cancel_in_flight(
+                in_flight, reason=f"Node {node_instance_id} deleted",
+            )
+
+        # 2. Strip the node + touching edges from the JSONB definition.
+        defn = dict(workflow.definition or {})
+        nodes = [n for n in defn.get("nodes", []) if n.get("id") != node_instance_id]
+        edges = [
+            e for e in defn.get("edges", [])
+            if e.get("source") != node_instance_id
+            and e.get("target") != node_instance_id
+        ]
+        defn["nodes"] = nodes
+        defn["edges"] = edges
+        workflow.definition = defn
+        await self.workflow_repo.update(workflow)
+
+        # 3. Drop the projection row (CASCADE drops touching edge rows).
+        await self.workflow_repo.delete_node_instance(node_instance_id)
+        await self.db.commit()
+
     # ── helpers ─────────────────────────────────────────────────────────
 
     async def _to_response(self, workflow: Workflow) -> WorkflowResponse:

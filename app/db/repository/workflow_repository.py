@@ -93,6 +93,19 @@ class WorkflowRepository:
         )
         return result.scalar_one_or_none()
 
+    async def delete_node_instance(self, node_instance_id: str) -> None:
+        """Hard-delete one workflow_node_instance row.
+
+        FK CASCADE on workflow_edge_instance.{source,target}_instance_id drops
+        any edges that touched the node. FK SET NULL on
+        workflow_execution.node_instance_id preserves run history with a null
+        link.
+        """
+        await self.db.execute(
+            delete(WorkflowNodeInstance).where(WorkflowNodeInstance.id == node_instance_id)
+        )
+        await self.db.flush()
+
     async def list_edge_instances(self, workflow_id: str) -> list[WorkflowEdgeInstance]:
         result = await self.db.execute(
             select(WorkflowEdgeInstance).where(
