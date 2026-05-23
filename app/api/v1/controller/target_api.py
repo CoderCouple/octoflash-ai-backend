@@ -1,31 +1,47 @@
 """Target (publishing destination) API controller.
 
-  GET    /targets        → list user's targets
-  GET    /targets/{id}   → one target (no OAuth blob)
-  POST   /targets        → create (optionally with inline OAuth blob)
-  PATCH  /targets/{id}   → partial update + credential rotation
-  DELETE /targets/{id}   → soft delete
+  GET    /targets                       → list user's targets
+  GET    /targets/{id}                  → one target (no OAuth blob)
+  POST   /targets                       → create (optionally with inline OAuth blob)
+  PATCH  /targets/{id}                  → partial update + credential rotation
+  DELETE /targets/{id}                  → soft delete
+  GET    /targets/oauth/{platform}/authorize  → OAuth authorize URL (FE redirects browser there)
 
-Per-platform OAuth callback handlers (YouTube/TikTok/Instagram) land in a
-later task — they'll call POST /targets internally once tokens are exchanged.
+The matching public callback (no JWT) lives in `oauth_callback_api.py`,
+mounted at root because OAuth providers won't carry the bearer token.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
 from app.api.v1.request.target_request import CreateTargetRequest, UpdateTargetRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.target_response import TargetResponse
+from app.common.enum.target import TargetPlatform
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
+from app.service.oauth_service import (
+    OAuthNotConfiguredError,
+    OAuthService,
+)
 from app.service.target_service import TargetService
+from app.settings import settings
 
 router = APIRouter(tags=[Tags.Target])
 
 
 def get_target_service(db: AsyncSession = Depends(get_db)) -> TargetService:
     return TargetService(db)
+
+
+class AuthorizeResponse(BaseModel):
+    """Returned by GET /targets/oauth/{platform}/authorize."""
+
+    authorize_url: str
+    state: str
+    redirect_uri: str
 
 
 @router.get(
@@ -88,3 +104,41 @@ async def delete_target(
 ):
     await service.delete(target_id)
     return success_response(None, "Target deleted")
+
+
+@router.get(
+    "/targets/oauth/{platform}/authorize",
+    response_model=BaseResponse[AuthorizeResponse],
+)
+async def authorize_target(
+    platform: TargetPlatform,
+    user_id: str | None = Query(default=None, description="Override the request user (dev only)."),
+):
+    """Build the platform's OAuth authorize URL.
+
+    The FE redirects `window.location` to `authorize_url`. After consent
+    the platform redirects to `{oauth_callback_base}/{platform}` with
+    `code` + `state` query params; the public callback handler completes
+    the flow + redirects back to the FE.
+
+    Returns 501 if the platform's client_id / client_secret env vars
+    aren't configured — that's the single point that exposes
+    "you forgot to fill in the .env values".
+    """
+    owner = user_id or settings.default_user_id
+    try:
+        url, state = OAuthService().build_authorize_url(
+            platform=platform, user_id=owner,
+        )
+    except OAuthNotConfiguredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e),
+        )
+    return success_response(
+        AuthorizeResponse(
+            authorize_url=url,
+            state=state,
+            redirect_uri=f"{settings.oauth_callback_base.rstrip('/')}/{platform.value}",
+        ),
+        "OAuth authorize URL ready",
+    )

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.enum.target import TargetPlatform
 from app.model.target_model import Target
 
 
@@ -34,6 +35,27 @@ class TargetRepository:
             base.order_by(Target.created_at.desc()).offset(offset).limit(limit)
         )
         return list(result.scalars().all()), total
+
+    async def get_by_user_platform_external(
+        self,
+        *,
+        user_id: str,
+        platform: TargetPlatform,
+        external_id: str,
+    ) -> Target | None:
+        """Look up the existing Target for a (user, platform, external_id)
+        triple — used by the OAuth callback to upsert rather than duplicate
+        when a user reconnects the same account.
+        """
+        result = await self.db.execute(
+            select(Target).where(
+                Target.user_id == user_id,
+                Target.platform == platform,
+                Target.external_id == external_id,
+                Target.is_deleted == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def create(self, target: Target) -> Target:
         self.db.add(target)

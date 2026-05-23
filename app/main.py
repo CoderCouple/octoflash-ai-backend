@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import router as api_router
 from app.api.v1.controller.billing_webhook_api import router as stripe_webhook_router
+from app.api.v1.controller.oauth_callback_api import router as oauth_callback_router
 from app.common.exceptions import register_exception_handlers
 from app.settings import settings
 
@@ -56,6 +57,10 @@ app.include_router(api_router)
 # Stripe webhook is mounted at root (no /api/v1 prefix, no JWT auth — the
 # signature header is the credential).
 app.include_router(stripe_webhook_router)
+# OAuth provider redirects land at /oauth/callback/{platform} — root-mounted
+# because the bearer token isn't carried in the redirect. `state` (signed
+# JWT) is the auth.
+app.include_router(oauth_callback_router)
 
 
 @app.get("/")

@@ -9,6 +9,8 @@ class TargetPlatform(str, Enum):
     YOUTUBE = "youtube"
     TIKTOK = "tiktok"
     INSTAGRAM = "instagram"
+    LINKEDIN = "linkedin"
+    X = "x"
 
 
 class TargetStatus(str, Enum):

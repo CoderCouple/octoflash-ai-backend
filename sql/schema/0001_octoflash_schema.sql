@@ -46,7 +46,7 @@ CREATE TYPE render_method_enum AS ENUM (
 CREATE TYPE source_platform_enum   AS ENUM ('youtube');
 CREATE TYPE source_video_kind_enum AS ENUM ('short', 'landscape');
 
-CREATE TYPE target_platform_enum AS ENUM ('youtube', 'tiktok', 'instagram');
+CREATE TYPE target_platform_enum AS ENUM ('youtube', 'tiktok', 'instagram', 'linkedin', 'x');
 CREATE TYPE target_status_enum   AS ENUM ('active', 'disconnected', 'expired');
 
 CREATE TYPE workflow_status_enum AS ENUM ('DRAFT', 'PUBLISHED');
