@@ -32,6 +32,24 @@ class WorkflowExecutionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_temporal_workflow_id(
+        self, temporal_workflow_id: str
+    ) -> WorkflowExecution | None:
+        """Look up the most recent execution row for a deterministic
+        temporal_workflow_id. Used by NodeRunnerService when Temporal rejects
+        a start_workflow because an in-flight run with that id already exists.
+        """
+        result = await self.db.execute(
+            select(WorkflowExecution)
+            .where(
+                WorkflowExecution.temporal_workflow_id == temporal_workflow_id,
+                WorkflowExecution.is_deleted == False,  # noqa: E712
+            )
+            .order_by(WorkflowExecution.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_in_flight_for_workflow(
         self, workflow_id: str
     ) -> list[WorkflowExecution]:

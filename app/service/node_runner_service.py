@@ -1,13 +1,26 @@
 """NodeRunnerService — start a Temporal workflow for one DAG node.
 
-The "Run" / "Regenerate" buttons in the FE call `POST /workflows/{wf_id}/
-nodes/{wni_id}/run`, which routes here. Each semantic node-kind maps to a
-Temporal workflow via the `_NODE_KIND_RUNNERS` registry below.
+The "Run" / "Regenerate" / "Retry" buttons in the FE all call
+`POST /workflows/{wf_id}/nodes/{wni_id}/run`, which routes here. Each
+semantic node-kind maps to a Temporal workflow via the `_NODE_KIND_RUNNERS`
+registry below.
 
-Coalescing: the temporal_workflow_id is deterministic per (node_id, config
-hash). Temporal's `WorkflowIDReusePolicy.REJECT_DUPLICATE` makes a second
-click with identical config return the in-flight execution's id instead of
-starting a new one. Different config → different hash → new run.
+Two FE-visible behaviors are layered on a deterministic temporal_workflow_id
+(`{prefix}-{kind}-{node_id}-{sha256(config)[:12]}`):
+
+  * **Coalesce double-clicks while running.** `WorkflowIDReusePolicy.ALLOW_DUPLICATE`
+    rejects a new start while a previous run with the same id is still in-flight.
+    We catch `WorkflowAlreadyStartedError` and return the existing execution
+    row, so two clicks with identical config get the same handle to poll.
+
+  * **Retry after the previous closes.** Once the prior run hits
+    COMPLETED / FAILED / CANCELED, ALLOW_DUPLICATE permits a new start with
+    the same id. Retry-after-failure = clicking Run again with the same
+    inputs (no separate endpoint needed).
+
+  * **New run on edited config.** A different brief / prompt / duration
+    changes the hash → different temporal_workflow_id → unconditionally
+    new run, regardless of the prior run's state.
 """
 
 from __future__ import annotations
@@ -21,6 +34,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio.common import WorkflowIDReusePolicy
+from temporalio.service import RPCError
 
 from app.common.enum.execution import WorkflowKind
 from app.common.exceptions import EntityNotFoundError
@@ -134,15 +148,39 @@ class NodeRunnerService:
         if hasattr(dispatched.workflow_input, "execution_id"):
             dispatched.workflow_input.execution_id = execution.id
 
-        # 7. Kick off Temporal — REJECT_DUPLICATE coalesces same-config reclicks.
+        # 7. Kick off Temporal. ALLOW_DUPLICATE lets the same id be reused
+        #    once the prior run closes (= retry-after-failure works) but
+        #    rejects while a prior run with that id is still in-flight (=
+        #    double-click coalescing). On in-flight conflict we look up the
+        #    existing handle, drop the just-created execution row, and return
+        #    the original.
         client = await get_temporal_client()
-        handle = await client.start_workflow(
-            dispatched.workflow_run,
-            dispatched.workflow_input,
-            id=temporal_workflow_id,
-            task_queue=settings.temporal_task_queue,
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-        )
+        try:
+            handle = await client.start_workflow(
+                dispatched.workflow_run,
+                dispatched.workflow_input,
+                id=temporal_workflow_id,
+                task_queue=settings.temporal_task_queue,
+                id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+            )
+        except RPCError as e:
+            # WorkflowExecutionAlreadyStartedFailure surfaces as RPCError
+            # ALREADY_EXISTS. Pull the existing execution row that points at
+            # this temporal_workflow_id and return it instead.
+            if "ALREADY_EXISTS" not in str(e) and "already started" not in str(e).lower():
+                raise
+            existing = await execution_service.execution_repo.get_by_temporal_workflow_id(
+                temporal_workflow_id
+            )
+            if existing is None:
+                # We created an execution row a moment ago but didn't manage
+                # to start Temporal AND can't find a prior one. Surface the
+                # original error rather than silently swallow.
+                raise
+            # Roll back our just-inserted execution row so the DB doesn't grow
+            # a stale PENDING row per coalesced click.
+            await self.execution_repo_delete(execution.id)
+            return WorkflowExecutionResponse.model_validate(existing)
 
         # 8. Flip to RUNNING + stamp the Temporal run_id.
         await execution_service.stamp_handle(
@@ -151,6 +189,16 @@ class NodeRunnerService:
         )
         await self.db.refresh(execution)
         return WorkflowExecutionResponse.model_validate(execution)
+
+    async def execution_repo_delete(self, execution_id: str) -> None:
+        """Hard-delete the just-created execution row when Temporal rejected
+        our start_workflow because an identical-id run is already in-flight."""
+        from sqlalchemy import delete
+        from app.model.workflow_execution_model import WorkflowExecution
+        await self.db.execute(
+            delete(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+        )
+        await self.db.commit()
 
     # ── per-kind dispatchers ─────────────────────────────────────────────
 
