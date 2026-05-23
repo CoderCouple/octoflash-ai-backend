@@ -7,10 +7,10 @@
 # Usage:
 #   bash infra/deploy.sh preflight        # sanity-check before deploying
 #   bash infra/deploy.sh secrets          # deploy Cognito + Stripe + OAuth + Temporal
+#   bash infra/deploy.sh dns-foundation   # deploy stack 10 (wildcard ACM cert)
 #   bash infra/deploy.sh build            # deploy ECR/CodeBuild stacks + trigger first builds
-#   bash infra/deploy.sh services         # deploy ECS services (backend + frontend)
+#   bash infra/deploy.sh services         # deploy ECS services (backend + frontend) — imports cert
 #   bash infra/deploy.sh pipelines        # deploy CICD pipelines
-#   bash infra/deploy.sh dns              # deploy DNS records
 #   bash infra/deploy.sh all              # preflight + everything above, in order
 #   bash infra/deploy.sh <stage>          # any one of the above
 
@@ -53,6 +53,12 @@ declare -a SECRETS_STAGE=(
   "${PROJECT}-${ENV}-temporal-secrets-stack 15-temporal-secrets-stack/temporal-secrets-stack.yaml               15-temporal-secrets-stack/temporal-secrets-stack-params.json"
 )
 
+# DNS foundation: wildcard ACM cert. Deploys ONCE, before the ECS stacks that
+# import the cert ARN (stacks 05 + 08). Survives ECS-stack teardown/redeploy.
+declare -a DNS_FOUNDATION_STAGE=(
+  "${PROJECT}-${ENV}-dns-records-stack      10-dns-records-stack/dns-records-stack.yaml                         10-dns-records-stack/dns-records-stack-params.json"
+)
+
 declare -a BUILD_STAGE=(
   "${PROJECT}-${ENV}-python-code-build-stack 02-python-code-build-stack/python-code-build-stack.yaml             02-python-code-build-stack/python-code-build-stack-params.json"
   "${PROJECT}-${ENV}-nextjs-code-build-stack 07-nextjs-code-build-stack/nextjs-code-build-stack.yaml             07-nextjs-code-build-stack/nextjs-code-build-stack-params.json"
@@ -66,10 +72,6 @@ declare -a SERVICES_STAGE=(
 declare -a PIPELINES_STAGE=(
   "${PROJECT}-${ENV}-python-cicd-pipeline-stack 06-python-cicd-pipeline-stack/python-cicd-pipeline-stack.yaml   06-python-cicd-pipeline-stack/python-cicd-pipeline-stack-params.json"
   "${PROJECT}-${ENV}-nextjs-cicd-pipeline-stack 09-nextjs-cicd-pipeline-stack/nextjs-cicd-pipeline-stack.yaml   09-nextjs-cicd-pipeline-stack/nextjs-cicd-pipeline-stack-params.json"
-)
-
-declare -a DNS_STAGE=(
-  "${PROJECT}-${ENV}-dns-records-stack      10-dns-records-stack/dns-records-stack.yaml                         10-dns-records-stack/dns-records-stack-params.json"
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -208,36 +210,37 @@ stage_pipelines() {
   deploy_stage PIPELINES_STAGE
 }
 
-stage_dns() {
-  step "Stage: DNS records"
-  deploy_stage DNS_STAGE
+stage_dns_foundation() {
+  step "Stage: DNS foundation (wildcard ACM cert — stack 10)"
+  deploy_stage DNS_FOUNDATION_STAGE
+  note "Cert validates ~60s once Route 53 delegation is healthy (DomainValidationOptions.HostedZoneId)."
 }
 
 stage_all() {
   preflight
   stage_secrets
-  warn "Pause: populate the empty secrets (see message above), then re-run 'deploy.sh build'."
+  warn "Pause: populate the empty secrets (see message above), then re-run 'deploy.sh dns-foundation'."
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────
 case "${1:-}" in
-  preflight) preflight ;;
-  secrets)   stage_secrets ;;
-  build)     stage_build ;;
-  services)  stage_services ;;
-  pipelines) stage_pipelines ;;
-  dns)       stage_dns ;;
-  all)       stage_all ;;
+  preflight)       preflight ;;
+  secrets)         stage_secrets ;;
+  dns-foundation)  stage_dns_foundation ;;
+  build)           stage_build ;;
+  services)        stage_services ;;
+  pipelines)       stage_pipelines ;;
+  all)             stage_all ;;
   "")
-    echo "Usage: $0 {preflight|secrets|build|services|pipelines|dns|all}"
+    echo "Usage: $0 {preflight|secrets|dns-foundation|build|services|pipelines|all}"
     echo
     echo "Recommended first-time order:"
     echo "  1. $0 preflight"
     echo "  2. $0 secrets             # then populate secret values via AWS console"
-    echo "  3. $0 build               # then wait for first ECR image to appear"
-    echo "  4. $0 services"
-    echo "  5. $0 pipelines"
-    echo "  6. $0 dns"
+    echo "  3. $0 dns-foundation      # wildcard ACM cert (stack 10) — auto-validates"
+    echo "  4. $0 build               # then wait for first ECR image to appear"
+    echo "  5. $0 services            # imports the cert ARN from stack 10"
+    echo "  6. $0 pipelines"
     exit 1
     ;;
   *) echo "unknown stage: $1"; exit 1 ;;

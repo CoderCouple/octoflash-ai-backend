@@ -1,15 +1,18 @@
 [
   {
-    "ParameterKey": "PublicHostedZoneName",
-    "ParameterValue": "octoflash.ai."
+    "ParameterKey": "ProjectName",
+    "ParameterValue": "octoflash"
+  },
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "DomainName",
+    "ParameterValue": "octoflash.ai"
   },
   {
     "ParameterKey": "PublicHostedZoneId",
     "ParameterValue": "Z00628722L7RGH80G6C89"
-  },
-  {
-    "ParameterKey": "NextJSStackName",
-    "ParameterValue": "octoflash-dev-nextjs-ecs-stack"
   }
 ]
-

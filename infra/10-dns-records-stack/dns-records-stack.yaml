@@ -1,60 +1,49 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: DNS records to point root domain and www to web ALB
+Description: >
+  DNS foundation — owns the wildcard ACM certificate (*.octoflash.ai) so it
+  survives teardown/redeploy of the ECS stacks. Deploy this once, before
+  stacks 05 (Python ECS) and 08 (NextJS ECS). The public hosted zone itself
+  is still managed manually (see PREFLIGHT.md); CFN only owns the cert here.
 
 Parameters:
-  PublicHostedZoneName:
-    Description: Name of publicly hosted zone for the project
+  ProjectName:
     Type: String
-    Default: octoflash.ai.
+    Default: octoflash
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  DomainName:
+    Type: String
+    Default: octoflash.ai
+    Description: Public domain (no trailing dot)
   PublicHostedZoneId:
-    Description: Route53 Hosted Zone ID for the domain
-    Type: String
+    Description: Route 53 hosted zone ID for DomainName
+    Type: AWS::Route53::HostedZone::Id
     Default: Z00628722L7RGH80G6C89
-  NextJSStackName:
-    Description: Name of the Next.js ECS stack to import ALB details
-    Type: String
-    Default: octoflash-dev-nextjs-ecs-stack
 
 Resources:
-  # Root domain (octoflash.ai) pointing to web ALB
-  RootDomainRecord:
-    Type: "AWS::Route53::RecordSet"
+  # Wildcard ACM certificate covering *.octoflash.ai + octoflash.ai.
+  # CloudFormation creates the DNS validation CNAME automatically because we
+  # pass HostedZoneId in DomainValidationOptions — validation completes in
+  # ~60 s once Namecheap NS is delegated to Route 53.
+  WildcardCertificate:
+    Type: AWS::CertificateManager::Certificate
     Properties:
-      AliasTarget:
-        DNSName: 
-          Fn::ImportValue: !Sub "${NextJSStackName}-NextJSLoadBalancerDNSName"
-        EvaluateTargetHealth: false
-        HostedZoneId: 
-          Fn::ImportValue: !Sub "${NextJSStackName}-NextJSLoadBalancerCanonicalHostedZoneID"
-      Comment: Root domain pointing to Next.js web ALB
-      HostedZoneId: !Ref PublicHostedZoneId
-      Name: octoflash.ai.
-      Type: A
-
-  # WWW subdomain (www.octoflash.ai) pointing to web ALB
-  WWWDomainRecord:
-    Type: "AWS::Route53::RecordSet"
-    Properties:
-      AliasTarget:
-        DNSName: 
-          Fn::ImportValue: !Sub "${NextJSStackName}-NextJSLoadBalancerDNSName"
-        EvaluateTargetHealth: false
-        HostedZoneId: 
-          Fn::ImportValue: !Sub "${NextJSStackName}-NextJSLoadBalancerCanonicalHostedZoneID"
-      Comment: WWW subdomain pointing to Next.js web ALB
-      HostedZoneId: !Ref PublicHostedZoneId
-      Name: www.octoflash.ai.
-      Type: A
+      DomainName: !Sub '*.${DomainName}'
+      SubjectAlternativeNames:
+        - !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub '*.${DomainName}'
+          HostedZoneId: !Ref PublicHostedZoneId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-wildcard-cert
 
 Outputs:
-  RootDomainURL:
-    Description: Root domain URL
-    Value: https://octoflash.ai
+  WildcardCertificateArn:
+    Description: ARN of the wildcard ACM certificate (imported by stacks 05 + 08)
+    Value: !Ref WildcardCertificate
     Export:
-      Name: !Sub "${AWS::StackName}-RootDomainURL"
-
-  WWWDomainURL:
-    Description: WWW domain URL
-    Value: https://www.octoflash.ai
-    Export:
-      Name: !Sub "${AWS::StackName}-WWWDomainURL"
+      Name: !Sub '${AWS::StackName}-WildcardCertificateArn'

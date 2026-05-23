@@ -63,6 +63,11 @@ Parameters:
     Description: Name for service discovery (e.g., web, app, portal)
     Type: String
     Default: web
+  DnsStackName:
+    Description: Stack 10 — owns the wildcard ACM cert; exports WildcardCertificateArn.
+    Type: String
+    Default: octoflash-dev-dns-records-stack
+    AllowedPattern: \S+
 
 Mappings:
   AccountMap:
@@ -435,13 +440,40 @@ Resources:
     Type: "AWS::ElasticLoadBalancingV2::Listener"
     Properties:
       Certificates:
-        - CertificateArn: arn:aws:acm:us-west-2:349738643995:certificate/993135f9-6d76-40fb-8ba1-b4505bad8532  # Using existing wildcard certificate
+        - CertificateArn: !ImportValue
+            "Fn::Sub": "${DnsStackName}-WildcardCertificateArn"
       DefaultActions:
         - TargetGroupArn: !Ref NextJSTargetGroup
           Type: forward
       LoadBalancerArn: !Ref NextJSLoadBalancer
       Port: 443
       Protocol: HTTPS
+
+  # Root domain (octoflash.ai) → NextJS ALB (moved here from stack 10).
+  RootDomainRecord:
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt NextJSLoadBalancer.DNSName
+        EvaluateTargetHealth: false
+        HostedZoneId: !GetAtt NextJSLoadBalancer.CanonicalHostedZoneID
+      Comment: Root domain pointing to Next.js web ALB
+      HostedZoneId: !Ref PublicHostedZoneId
+      Name: !Sub "${DomainNameForCertificate}."
+      Type: A
+
+  # www.octoflash.ai → NextJS ALB (moved here from stack 10).
+  WWWDomainRecord:
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt NextJSLoadBalancer.DNSName
+        EvaluateTargetHealth: false
+        HostedZoneId: !GetAtt NextJSLoadBalancer.CanonicalHostedZoneID
+      Comment: WWW subdomain pointing to Next.js web ALB
+      HostedZoneId: !Ref PublicHostedZoneId
+      Name: !Sub "www.${DomainNameForCertificate}."
+      Type: A
 
   AppDNSRecord:
     Type: "AWS::Route53::RecordSet"

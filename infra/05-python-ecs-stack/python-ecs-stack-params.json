@@ -33,6 +33,10 @@
     "ParameterValue": "octopodai-dev-email-queue-url"
   },
   {
+    "ParameterKey": "EmailQueueArnExportName",
+    "ParameterValue": "octopodai-dev-email-queue-arn"
+  },
+  {
     "ParameterKey": "CodeBuildStackName",
     "ParameterValue": "octoflash-dev-python-code-build-stack"
   },
@@ -47,6 +51,14 @@
   {
     "ParameterKey": "OauthSecretsStackName",
     "ParameterValue": "octoflash-dev-oauth-secrets-stack"
+  },
+  {
+    "ParameterKey": "CognitoStackName",
+    "ParameterValue": "octoflash-dev-cognito-stack"
+  },
+  {
+    "ParameterKey": "DnsStackName",
+    "ParameterValue": "octoflash-dev-dns-records-stack"
   },
 
   {

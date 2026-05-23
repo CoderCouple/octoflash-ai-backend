@@ -42,6 +42,12 @@ Parameters:
     Default: octopodai-dev-email-queue-url
     AllowedPattern: \S+
     Description: CloudFormation Export name for the shared SQS email queue URL.
+  EmailQueueArnExportName:
+    Type: String
+    Default: octopodai-dev-email-queue-arn
+    AllowedPattern: \S+
+    Description: CloudFormation Export name for the shared SQS email queue ARN
+      (used by the task role's sqs:SendMessage permission).
   # ── Octoflash-specific stacks ───────────────────────────────────────
   CodeBuildStackName:
     Type: String
@@ -61,6 +67,16 @@ Parameters:
     Type: String
     Default: octoflash-dev-oauth-secrets-stack
     AllowedPattern: \S+
+  CognitoStackName:
+    Type: String
+    Default: octoflash-dev-cognito-stack
+    AllowedPattern: \S+
+    Description: Stack 12 — exports UserPoolId / CognitoRegion / FrontendAppClientId.
+  DnsStackName:
+    Type: String
+    Default: octoflash-dev-dns-records-stack
+    AllowedPattern: \S+
+    Description: Stack 10 — owns the wildcard ACM cert; exports WildcardCertificateArn.
   SesFromEmail:
     Type: String
     Default: noreply@octoflash.ai
@@ -91,24 +107,6 @@ Conditions:
   IsProd: !Equals [!Ref Environment, prod]
 
 Resources:
-
-  # ---------------------------------------------------------------------------
-  # Wildcard ACM Certificate (*.octoflash.ai + octoflash.ai)
-  # CloudFormation auto-creates DNS validation records in the existing hosted zone.
-  # ---------------------------------------------------------------------------
-  WildcardCertificate:
-    Type: AWS::CertificateManager::Certificate
-    Properties:
-      DomainName: !Sub '*.${DomainName}'
-      SubjectAlternativeNames:
-        - !Ref DomainName
-      ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Sub '*.${DomainName}'
-          HostedZoneId: !Ref HostedZoneId
-      Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-${Environment}-wildcard-cert
 
   # ---------------------------------------------------------------------------
   # IAM — Execution Role (ECS agent: pull image, write logs, read secrets)
@@ -200,7 +198,7 @@ Resources:
                   - sqs:GetQueueUrl
                 Resource:
                   - !ImportValue
-                    'Fn::Sub': '${ProjectName}-${Environment}-email-queue-arn'
+                    Ref: EmailQueueArnExportName
               - Effect: Allow
                 Action:
                   - ses:SendEmail
@@ -259,10 +257,11 @@ Resources:
             Retries: 3
             StartPeriod: 60
 
-          # Non-sensitive environment variables. The `&container_env` anchor
-          # is referenced by the temporal-worker sidecar below — keeping them
-          # in lockstep so both containers see the same config.
-          Environment: &container_env
+          # Non-sensitive environment variables. The temporal-worker sidecar
+          # below carries an identical Environment block (CloudFormation
+          # disallows YAML aliases, so the duplication is intentional —
+          # update both blocks in lockstep when adding a new var).
+          Environment:
             - Name: APP_NAME
               Value: Octoflash Backend
             - Name: ENVIRONMENT
@@ -288,13 +287,13 @@ Resources:
               Value: 'true'
             - Name: COGNITO_USER_POOL_ID
               Value: !ImportValue
-                'Fn::Sub': 'octoflash-cognito-UserPoolId'
+                'Fn::Sub': '${CognitoStackName}-UserPoolId'
             - Name: COGNITO_REGION
               Value: !ImportValue
-                'Fn::Sub': 'octoflash-cognito-CognitoRegion'
+                'Fn::Sub': '${CognitoStackName}-CognitoRegion'
             - Name: COGNITO_APP_CLIENT_ID
               Value: !ImportValue
-                'Fn::Sub': 'octoflash-cognito-FrontendAppClientId'
+                'Fn::Sub': '${CognitoStackName}-FrontendAppClientId'
             - Name: AWS_REGION
               Value: !Ref AWS::Region
             - Name: SES_FROM_EMAIL
@@ -311,8 +310,9 @@ Resources:
               Value: !Sub '${ProjectName}-${Environment}-renders'
 
           # Sensitive values — resolved from Secrets Manager at task startup.
-          # `&container_secrets` anchor is reused by the worker sidecar.
-          Secrets: &container_secrets
+          # Duplicated verbatim in the temporal-worker sidecar (CloudFormation
+          # disallows YAML aliases) — update both blocks together.
+          Secrets:
             - Name: POSTGRES_USER
               ValueFrom: !Join
                 - ''
@@ -448,8 +448,151 @@ Resources:
             - python
             - -m
             - app.workers.worker
-          Environment: *container_env
-          Secrets: *container_secrets
+          # NOTE: identical to fastapi-container's Environment block — keep in
+          # lockstep when adding new vars (CFN disallows YAML aliases).
+          Environment:
+            - Name: APP_NAME
+              Value: Octoflash Backend
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: DEBUG
+              Value: !If [IsProd, 'false', 'false']
+            - Name: HOST
+              Value: '0.0.0.0'
+            - Name: PORT
+              Value: '8000'
+            - Name: API_PREFIX
+              Value: /api/v1
+            - Name: ALLOWED_ORIGINS
+              Value: !If [IsProd, '["https://octoflash.ai","https://www.octoflash.ai"]', '["*"]']
+            - Name: POSTGRES_HOST
+              Value: !ImportValue
+                'Fn::Sub': '${DBStackName}-DBEndpoint'
+            - Name: POSTGRES_PORT
+              Value: '5432'
+            - Name: POSTGRES_DB
+              Value: !Ref DBName
+            - Name: DB_SSL_REQUIRE
+              Value: 'true'
+            - Name: COGNITO_USER_POOL_ID
+              Value: !ImportValue
+                'Fn::Sub': '${CognitoStackName}-UserPoolId'
+            - Name: COGNITO_REGION
+              Value: !ImportValue
+                'Fn::Sub': '${CognitoStackName}-CognitoRegion'
+            - Name: COGNITO_APP_CLIENT_ID
+              Value: !ImportValue
+                'Fn::Sub': '${CognitoStackName}-FrontendAppClientId'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: SES_FROM_EMAIL
+              Value: !Ref SesFromEmail
+            - Name: SQS_EMAIL_QUEUE_URL
+              Value: !ImportValue
+                Ref: EmailQueueExportName
+            - Name: SQS_EMAIL_MESSAGE_GROUP
+              Value: !Sub '${ProjectName}-${Environment}-email-group'
+            - Name: TEMPORAL_TASK_QUEUE
+              Value: !Sub '${ProjectName}-${Environment}-renders'
+          # NOTE: identical to fastapi-container's Secrets block — keep both
+          # in lockstep when adding new secret env vars.
+          Secrets:
+            - Name: POSTGRES_USER
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - ':username::'
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${DBStackName}-DBSecretArn'
+                  - ':password::'
+            - Name: STRIPE_SECRET_KEY
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':secret_key::'
+            - Name: STRIPE_WEBHOOK_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':webhook_secret::'
+            - Name: STRIPE_PRICE_ID_PRO
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':price_id_pro::'
+            - Name: STRIPE_PRICE_ID_ENTERPRISE
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${StripeStackName}-StripeSecretArn'
+                  - ':price_id_enterprise::'
+            - Name: GOOGLE_CLIENT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':client_id::'
+            - Name: GOOGLE_CLIENT_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':client_secret::'
+            - Name: GOOGLE_REDIRECT_URI
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-google-oauth-secret-arn'
+                  - ':redirect_uri::'
+            - Name: MS_CLIENT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':client_id::'
+            - Name: MS_CLIENT_SECRET
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':client_secret::'
+            - Name: MS_TENANT_ID
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':tenant_id::'
+            - Name: MS_REDIRECT_URI
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${ProjectName}-${Environment}-microsoft-oauth-secret-arn'
+                  - ':redirect_uri::'
+            - Name: TEMPORAL_ADDRESS
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':address::'
+            - Name: TEMPORAL_NAMESPACE
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':namespace::'
+            - Name: TEMPORAL_API_KEY
+              ValueFrom: !Join
+                - ''
+                - - !ImportValue
+                      'Fn::Sub': '${TemporalSecretsStackName}-TemporalSecretArn'
+                  - ':api_key::'
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -549,7 +692,8 @@ Resources:
       Port: 443
       Protocol: HTTPS
       Certificates:
-        - CertificateArn: !Ref WildcardCertificate
+        - CertificateArn: !ImportValue
+            'Fn::Sub': '${DnsStackName}-WildcardCertificateArn'
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref PythonTargetGroup
@@ -689,12 +833,6 @@ Resources:
         HostedZoneId: !GetAtt PythonLoadBalancer.CanonicalHostedZoneID
 
 Outputs:
-
-  WildcardCertificateArn:
-    Description: ARN of the wildcard ACM certificate
-    Value: !Ref WildcardCertificate
-    Export:
-      Name: !Sub '${AWS::StackName}-WildcardCertArn'
 
   PythonLoadBalancerDNSName:
     Description: ALB DNS name
