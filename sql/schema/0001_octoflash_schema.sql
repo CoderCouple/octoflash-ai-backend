@@ -437,6 +437,9 @@ CREATE INDEX idx_wei_target_instance_id ON workflow_edge_instance(target_instanc
 CREATE TABLE workflow_execution (
   id                            TEXT PRIMARY KEY DEFAULT ('execution_' || gen_random_uuid()) NOT NULL,
   workflow_id                   TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+  -- NULL for project-level executions; set when the run was triggered by
+  -- clicking a specific DAG node (the new POST /workflows/{id}/nodes/{id}/run).
+  node_instance_id              TEXT REFERENCES workflow_node_instance(id) ON DELETE SET NULL,
   user_id                       TEXT NOT NULL REFERENCES "user"(id),
   kind                          workflow_kind_enum     NOT NULL,
   trigger_kind                  execution_trigger_enum NOT NULL DEFAULT 'MANUAL',
@@ -542,5 +545,6 @@ INSERT INTO user_preference (user_id) VALUES
 INSERT INTO workflow_node_type (name, type) VALUES
   ('Source: URL',  'source_url'),
   ('Source: Text', 'source_text'),
+  ('Analyze',      'analyze'),
   ('Scene',        'scene'),
   ('Target',       'target');

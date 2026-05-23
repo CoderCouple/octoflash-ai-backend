@@ -67,15 +67,20 @@ class WorkflowExecutionService:
         temporal_workflow_type: str,
         trigger: ExecutionTrigger = ExecutionTrigger.MANUAL,
         user_id: str | None = None,
+        node_instance_id: str | None = None,
     ) -> WorkflowExecution:
         """Insert a WorkflowExecution row stamped with the temporal id we'll use.
 
         Call this BEFORE `client.start_workflow(...)`. After start, call
         `stamp_handle()` to flip status → RUNNING + record the run_id.
+
+        Pass `node_instance_id` when the execution was triggered by clicking
+        "Run" on a specific DAG node so the FE can render per-node run history.
         """
         workflow = await self.ensure_workflow_for_project(project_id)
         execution = WorkflowExecution(
             workflow_id=workflow.id,
+            node_instance_id=node_instance_id,
             user_id=user_id or workflow.user_id or settings.default_user_id,
             kind=kind,
             trigger_kind=trigger,

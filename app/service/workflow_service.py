@@ -88,14 +88,19 @@ class WorkflowService:
                        f"target={bad_edges[0].target!r})",
             )
 
-        # Resolve every node.type machine key → workflow_node_type.id.
+        # Resolve every node's semantic type → workflow_node_type.id.
+        # React Flow sets `node.type` to the *renderer* component name (e.g.
+        # "OctoflashNode" — the FE registers one renderer for all node kinds)
+        # and stores the semantic kind in `node.data.type`. Prefer the latter;
+        # fall back to top-level `type` for older payloads that wrote it there.
         node_rows: list[WorkflowNodeInstance] = []
         for n in defn.nodes:
-            type_row = await self.workflow_repo.get_node_type_by_key(n.type)
+            semantic_type = n.data.get("type") or n.type
+            type_row = await self.workflow_repo.get_node_type_by_key(semantic_type)
             if type_row is None:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Unknown node type {n.type!r} (node id {n.id})",
+                    detail=f"Unknown node type {semantic_type!r} (node id {n.id})",
                 )
             node_rows.append(_node_to_instance(n, workflow_id, type_row.id))
 

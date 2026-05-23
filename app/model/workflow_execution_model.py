@@ -31,6 +31,17 @@ class WorkflowExecution(Base):
         nullable=False,
         index=True,
     )
+    # When the execution was kicked off via "Run" on a specific DAG node, this
+    # points at that node. NULL for executions started by project-level routes
+    # (POST /projects/from-source, POST /projects/{id}/generate) where the run
+    # is for the whole project, not a single node. Indexed so the FE can show
+    # per-node run history with a plain SQL WHERE.
+    node_instance_id = Column(
+        String(),
+        ForeignKey("workflow_node_instance.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     user_id = Column(String(), ForeignKey("user.id"), nullable=False, index=True)
     kind = Column(
         SAEnum(

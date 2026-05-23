@@ -197,6 +197,7 @@ class ProjectService:
             AnalyzeProjectWorkflow.run,
             AnalyzeProjectInput(
                 execution_id=execution.id,
+                workflow_id=execution.workflow_id,
                 project_id=project.id,
                 source_url=source_url,
                 title_was_unset=(title is None),

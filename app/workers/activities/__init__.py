@@ -18,6 +18,7 @@ from app.workers.activities.project_activity import (
     persist_clip_result_activity,
     update_project_activity,
 )
+from app.workers.activities.seed_workflow_activity import seed_workflow_definition_activity
 
 ALL_ACTIVITIES = [
     # Analyze pipeline
@@ -34,4 +35,6 @@ ALL_ACTIVITIES = [
     # Project + execution-lineage status writes
     update_project_activity,
     update_execution_activity,
+    # Seed the React Flow DAG at end of analyze
+    seed_workflow_definition_activity,
 ]

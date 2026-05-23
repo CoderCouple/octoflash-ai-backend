@@ -29,9 +29,19 @@ with workflow.unsafe.imports_passed_through():
         UpdateExecutionInput,
         update_execution_activity,
     )
+    from app.workers.activities.plan_activity import (
+        PlanClipsInput,
+        PlanClipsOutput,
+        plan_clips_activity,
+    )
     from app.workers.activities.project_activity import (
         UpdateProjectInput,
         update_project_activity,
+    )
+    from app.workers.activities.seed_workflow_activity import (
+        SeedClip,
+        SeedWorkflowInput,
+        seed_workflow_definition_activity,
     )
 
 
@@ -47,12 +57,21 @@ _DB_RETRY = RetryPolicy(
 )
 
 
+_PLAN_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=5),
+    maximum_attempts=2,
+    backoff_coefficient=2.0,
+)
+
+
 @dataclass
 class AnalyzeProjectInput:
     execution_id: str
+    workflow_id: str
     project_id: str
     source_url: str
     title_was_unset: bool = True  # if True, overwrite Project.title with title_hint
+    max_clips: int = 8
 
 
 async def _mark_job_failed(execution_id: str, exc: BaseException) -> None:
@@ -147,6 +166,49 @@ class AnalyzeProjectWorkflow:
                     manim_prompt=result.manim_prompt,
                     source_duration=result.source_duration,
                     frames_dir=result.frames_dir,
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=_DB_RETRY,
+            )
+
+            # ── plan clips so the seeded DAG has a real scene chain ──
+            # Portrait by default; user can re-plan for landscape at Generate
+            # time. target_duration falls back to 60s if the source has no
+            # measurable duration (article / text intake).
+            planned: PlanClipsOutput = await workflow.execute_activity(
+                plan_clips_activity,
+                PlanClipsInput(
+                    project_id=input.project_id,
+                    transcript=result.transcript,
+                    description=result.description,
+                    manim_prompt=result.manim_prompt,
+                    target_duration=result.source_duration or 60.0,
+                    orientation="portrait",
+                    max_clips=input.max_clips,
+                ),
+                start_to_close_timeout=timedelta(minutes=3),
+                retry_policy=_PLAN_RETRY,
+            )
+
+            # ── seed the React Flow DAG so the editor opens to a real graph ──
+            await workflow.execute_activity(
+                seed_workflow_definition_activity,
+                SeedWorkflowInput(
+                    workflow_id=input.workflow_id,
+                    source_url=input.source_url,
+                    clips=[
+                        SeedClip(n=c.n, title=c.title, prompt=c.prompt, duration=c.duration)
+                        for c in planned.clips
+                    ],
+                ),
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=_DB_RETRY,
+            )
+            await workflow.execute_activity(
+                update_execution_activity,
+                UpdateExecutionInput(
+                    execution_id=input.execution_id,
+                    log_entry={"step": "seeded_dag", "clip_count": len(planned.clips)},
                 ),
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=_DB_RETRY,

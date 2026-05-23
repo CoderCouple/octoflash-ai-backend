@@ -81,6 +81,18 @@ class WorkflowRepository:
         )
         return list(result.scalars().all())
 
+    async def get_node_instance_by_id(
+        self, node_instance_id: str
+    ) -> WorkflowNodeInstance | None:
+        """One node-instance row by its wni_<uuid> id."""
+        result = await self.db.execute(
+            select(WorkflowNodeInstance).where(
+                WorkflowNodeInstance.id == node_instance_id,
+                WorkflowNodeInstance.is_deleted == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_edge_instances(self, workflow_id: str) -> list[WorkflowEdgeInstance]:
         result = await self.db.execute(
             select(WorkflowEdgeInstance).where(
