@@ -16,9 +16,11 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
+from app.api.v1.request.publish_request import PublishTargetRequest
 from app.api.v1.request.target_request import CreateTargetRequest, UpdateTargetRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.target_response import TargetResponse
+from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.common.enum.target import TargetPlatform
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
@@ -26,6 +28,8 @@ from app.service.oauth_service import (
     OAuthNotConfiguredError,
     OAuthService,
 )
+from app.service.publish.models import PublishMetadata
+from app.service.publish_service import PublishService
 from app.service.target_service import TargetService
 from app.settings import settings
 
@@ -104,6 +108,40 @@ async def delete_target(
 ):
     await service.delete(target_id)
     return success_response(None, "Target deleted")
+
+
+@router.post(
+    "/targets/{target_id}/publish",
+    response_model=BaseResponse[WorkflowExecutionResponse],
+    status_code=202,
+)
+async def publish_target(
+    target_id: str,
+    body: PublishTargetRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload the project's final render for `orientation` to this target.
+
+    Returns 202 with the WorkflowExecution to poll at GET /executions/{id}.
+    Returns 409 if the target has no credential / project hasn't generated
+    a final video / target was disconnected. Returns 401 if the stored
+    token can't refresh (user must reconnect). Returns 501 if the target's
+    platform has no publisher implemented yet.
+    """
+    metadata = PublishMetadata(
+        title=body.title,
+        description=body.description,
+        tags=body.tags,
+        privacy=body.privacy,
+        extra=body.extra,
+    )
+    execution = await PublishService(db).publish(
+        target_id=target_id,
+        project_id=body.project_id,
+        orientation=body.orientation,
+        metadata=metadata,
+    )
+    return success_response(execution, "Publish started", 202)
 
 
 @router.get(

@@ -14,10 +14,12 @@ Two workflows back the source → MP4 pipeline:
 
 from app.workers.workflows.analyze_workflow import AnalyzeProjectWorkflow
 from app.workers.workflows.generate_workflow import GenerateVideoWorkflow
+from app.workers.workflows.publish_workflow import PublishTargetWorkflow
 from app.workers.workflows.regenerate_workflow import RegenerateClipWorkflow
 
 ALL_WORKFLOWS = [
     AnalyzeProjectWorkflow,
     GenerateVideoWorkflow,
     RegenerateClipWorkflow,
+    PublishTargetWorkflow,
 ]

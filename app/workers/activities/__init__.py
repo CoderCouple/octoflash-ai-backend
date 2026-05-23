@@ -18,6 +18,7 @@ from app.workers.activities.project_activity import (
     persist_clip_result_activity,
     update_project_activity,
 )
+from app.workers.activities.publish_activity import publish_target_activity
 from app.workers.activities.seed_workflow_activity import seed_workflow_definition_activity
 
 ALL_ACTIVITIES = [
@@ -37,4 +38,6 @@ ALL_ACTIVITIES = [
     update_execution_activity,
     # Seed the React Flow DAG at end of analyze
     seed_workflow_definition_activity,
+    # Publish final render to a Target platform
+    publish_target_activity,
 ]
