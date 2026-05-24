@@ -1,6 +1,6 @@
 """Public OAuth callback handler — mounted at root, no JWT.
 
-OAuth providers redirect the browser back to `/oauth/callback/{platform}`
+OAuth providers redirect the browser back to `/oauth/{platform}/callback`
 after consent. The bearer token isn't carried in that redirect, so this
 router lives outside the JWT-protected `/api/v1` tree.
 
@@ -34,7 +34,7 @@ from app.service.oauth_service import OAuthError, OAuthService
 from app.service.target_service import TargetService
 from app.settings import settings
 
-router = APIRouter(prefix="/oauth", tags=["OAuth"], include_in_schema=False)
+router = APIRouter(tags=["OAuth"], include_in_schema=False)
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _redirect_to_fe(*, target_id: str | None = None, error: str | None = None,
     )
 
 
-@router.get("/callback/{platform}")
+@router.get("/oauth/{platform}/callback")
 async def oauth_callback(
     platform: TargetPlatform,
     code: str | None = Query(default=None),

@@ -34,7 +34,12 @@ import httpx
 
 from app.common.enum.target import TargetPlatform
 from app.common.exceptions import EntityNotFoundError
-from app.common.oauth.config import NormalizedAccount, PLATFORM_CONFIGS, PlatformConfig
+from app.common.oauth.config import (
+    NormalizedAccount,
+    PLATFORM_CONFIGS,
+    PlatformConfig,
+    get_redirect_uri,
+)
 from app.common.oauth.state import make_state, verify_state
 from app.settings import settings
 
@@ -247,7 +252,7 @@ def _config_or_500(platform: TargetPlatform) -> PlatformConfig:
 
 
 def _redirect_uri(platform: TargetPlatform) -> str:
-    return f"{settings.oauth_callback_base.rstrip('/')}/{platform.value}"
+    return get_redirect_uri(platform)
 
 
 def _gen_verifier() -> str:

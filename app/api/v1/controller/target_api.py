@@ -24,6 +24,7 @@ from app.api.v1.response.workflow_execution_response import WorkflowExecutionRes
 from app.common.enum.target import TargetPlatform
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
+from app.common.oauth import get_redirect_uri
 from app.service.oauth_service import (
     OAuthNotConfiguredError,
     OAuthService,
@@ -31,7 +32,6 @@ from app.service.oauth_service import (
 from app.service.publish.models import PublishMetadata
 from app.service.publish_service import PublishService
 from app.service.target_service import TargetService
-from app.settings import settings
 
 router = APIRouter(tags=[Tags.Target])
 
@@ -163,6 +163,7 @@ async def authorize_target(
     aren't configured — that's the single point that exposes
     "you forgot to fill in the .env values".
     """
+    from app.settings import settings  # local import — no module-level dep
     owner = user_id or settings.default_user_id
     try:
         url, state = OAuthService().build_authorize_url(
@@ -176,7 +177,7 @@ async def authorize_target(
         AuthorizeResponse(
             authorize_url=url,
             state=state,
-            redirect_uri=f"{settings.oauth_callback_base.rstrip('/')}/{platform.value}",
+            redirect_uri=get_redirect_uri(platform),
         ),
         "OAuth authorize URL ready",
     )

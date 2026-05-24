@@ -191,8 +191,8 @@ PLATFORM_CONFIGS: dict[TargetPlatform, PlatformConfig] = {
         use_pkce=False,
         token_auth_method="body",   # Google accepts both; body is simpler
         credentials=lambda: (
-            settings.google_oauth_client_id,
-            settings.google_oauth_client_secret,
+            settings.youtube_client_id,
+            settings.youtube_client_secret,
         ),
         fetch_account=_fetch_youtube,
         # `access_type=offline` + `prompt=consent` forces Google to return a
@@ -208,8 +208,8 @@ PLATFORM_CONFIGS: dict[TargetPlatform, PlatformConfig] = {
         use_pkce=True,
         token_auth_method="body",
         credentials=lambda: (
-            settings.tiktok_oauth_client_key,
-            settings.tiktok_oauth_client_secret,
+            settings.tiktok_client_key,
+            settings.tiktok_client_secret,
         ),
         fetch_account=_fetch_tiktok,
         # TikTok docs spell the parameter "client_key" (not client_id). We
@@ -228,9 +228,12 @@ PLATFORM_CONFIGS: dict[TargetPlatform, PlatformConfig] = {
         ],
         use_pkce=False,
         token_auth_method="body",
+        # Meta calls them "app_id / app_secret" rather than client_id/secret —
+        # the OAuth wire format still uses client_id, so the OAuthService
+        # passes ig_app_id as the client_id query/body param.
         credentials=lambda: (
-            settings.instagram_oauth_client_id,
-            settings.instagram_oauth_client_secret,
+            settings.ig_app_id,
+            settings.ig_app_secret,
         ),
         fetch_account=_fetch_instagram,
     ),
@@ -245,8 +248,8 @@ PLATFORM_CONFIGS: dict[TargetPlatform, PlatformConfig] = {
         use_pkce=False,
         token_auth_method="body",
         credentials=lambda: (
-            settings.linkedin_oauth_client_id,
-            settings.linkedin_oauth_client_secret,
+            settings.linkedin_client_id,
+            settings.linkedin_client_secret,
         ),
         fetch_account=_fetch_linkedin,
     ),
@@ -267,9 +270,23 @@ PLATFORM_CONFIGS: dict[TargetPlatform, PlatformConfig] = {
         use_pkce=True,                # X REQUIRES PKCE
         token_auth_method="basic",
         credentials=lambda: (
-            settings.x_oauth_client_id,
-            settings.x_oauth_client_secret,
+            settings.x_client_id,
+            settings.x_client_secret,
         ),
         fetch_account=_fetch_x,
     ),
 }
+
+
+# Per-platform redirect_uri lookup. The platform's developer console must
+# have the exact value registered (scheme + host + path). The OAuthService
+# reads from here when building the authorize URL and posting the token
+# exchange, so a single env-var change rolls out cleanly per platform.
+def get_redirect_uri(platform: TargetPlatform) -> str:
+    return {
+        TargetPlatform.YOUTUBE:   settings.youtube_redirect_uri,
+        TargetPlatform.TIKTOK:    settings.tiktok_redirect_uri,
+        TargetPlatform.INSTAGRAM: settings.ig_redirect_uri,
+        TargetPlatform.LINKEDIN:  settings.linkedin_redirect_uri,
+        TargetPlatform.X:         settings.x_redirect_uri,
+    }[platform]

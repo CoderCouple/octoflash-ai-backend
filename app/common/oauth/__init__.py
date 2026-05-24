@@ -15,6 +15,7 @@ from app.common.oauth.config import (
     PlatformConfig,
     PLATFORM_CONFIGS,
     NormalizedAccount,
+    get_redirect_uri,
 )
 from app.common.oauth.state import make_state, verify_state, InvalidStateError
 
@@ -22,6 +23,7 @@ __all__ = [
     "PlatformConfig",
     "PLATFORM_CONFIGS",
     "NormalizedAccount",
+    "get_redirect_uri",
     "make_state",
     "verify_state",
     "InvalidStateError",

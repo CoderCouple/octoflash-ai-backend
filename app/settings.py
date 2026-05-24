@@ -179,53 +179,60 @@ class Settings(BaseSettings):
 
     # ── OAuth — publishing targets ──────────────────────────────────────────
     # Each platform's Authorization Code (sometimes + PKCE) flow needs a
-    # client_id + client_secret pair from that platform's developer console.
-    # Empty defaults make the corresponding `Connect <platform>` endpoint
-    # return 501 rather than crash, so a half-configured deployment fails
+    # client_id + client_secret + redirect_uri triple from that platform's
+    # developer console. Per-platform naming (rather than a single
+    # GOOGLE_OAUTH_* prefix) so each platform's keys live under one
+    # consistent prefix in the .env file.
+    #
+    # Empty client_id makes the corresponding `Connect <platform>` endpoint
+    # return 501 rather than crash — a half-configured deployment fails
     # loudly per platform instead of globally.
     #
-    # The backend serves the redirect endpoint at:
-    #   {oauth_callback_base}/{platform}
-    # In production this is `https://api.octoflash.ai/oauth/callback/<p>`.
-    # In dev the default points at `http://localhost:8008/oauth/callback`.
-    # Whichever value you use here MUST match the redirect URI registered in
-    # the platform's developer console exactly (scheme + host + path).
+    # `<platform>_redirect_uri` MUST match what's registered in the
+    # platform's developer console exactly (scheme + host + path).
     #
     # On a successful connect the backend redirects the browser back to:
     #   {frontend_url}/targets?connected=<target_id>
-    oauth_callback_base: str = "http://localhost:8008/oauth/callback"
     frontend_url: str = "http://localhost:5173"
     # State token signing key — independent of credential_encryption_key so
     # rotating one doesn't invalidate the other. Falls back to credential key
     # in dev, but production should set a dedicated secret (32-byte base64).
     oauth_state_secret: str = ""
 
-    # YouTube — uses Google OAuth 2.0. Same Google Cloud project as Gmail can
-    # be reused with added scopes (youtube.upload + youtube.readonly).
-    # Configure at https://console.cloud.google.com/apis/credentials
-    google_oauth_client_id: str = ""
-    google_oauth_client_secret: str = ""
+    # YouTube — Google OAuth 2.0. Configure at
+    # https://console.cloud.google.com/apis/credentials
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    youtube_redirect_uri: str = "http://localhost:8008/oauth/youtube/callback"
 
     # TikTok for Developers (Login Kit + Content Posting API).
     # TikTok calls the public id "client key" rather than "client id".
     # Configure at https://developers.tiktok.com/apps/
-    tiktok_oauth_client_key: str = ""
-    tiktok_oauth_client_secret: str = ""
+    tiktok_client_key: str = ""
+    tiktok_client_secret: str = ""
+    tiktok_redirect_uri: str = "http://localhost:8008/oauth/tiktok/callback"
 
-    # Instagram — Facebook Login for Business + Instagram Graph API.
+    # Instagram — Facebook Login for Business + Instagram Graph API. Meta
+    # calls them "app_id / app_secret" rather than "client_id / client_secret".
+    # `ig_business_account_id` is the linked-Page's IG Business Account id —
+    # static config per deploy since IG publishing requires it on every call.
     # Configure under Meta for Developers (App → Use cases → Instagram).
-    instagram_oauth_client_id: str = ""
-    instagram_oauth_client_secret: str = ""
+    ig_app_id: str = ""
+    ig_app_secret: str = ""
+    ig_redirect_uri: str = "http://localhost:8008/oauth/instagram/callback"
+    ig_business_account_id: str = ""
 
     # LinkedIn — Marketing Developer Platform.
     # Configure at https://www.linkedin.com/developers/apps
-    linkedin_oauth_client_id: str = ""
-    linkedin_oauth_client_secret: str = ""
+    linkedin_client_id: str = ""
+    linkedin_client_secret: str = ""
+    linkedin_redirect_uri: str = "http://localhost:8008/oauth/linkedin/callback"
 
     # X (Twitter) — OAuth 2.0 with PKCE (required).
     # Configure at https://developer.x.com/en/portal/dashboard
-    x_oauth_client_id: str = ""
-    x_oauth_client_secret: str = ""
+    x_client_id: str = ""
+    x_client_secret: str = ""
+    x_redirect_uri: str = "http://localhost:8008/oauth/x/callback"
 
     model_config = SettingsConfigDict(
         env_file=_detect_env_file(),
