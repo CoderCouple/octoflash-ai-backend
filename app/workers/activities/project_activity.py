@@ -114,6 +114,111 @@ class CreateScenesOutput:
     scenes: list[CreatedScene]
 
 
+@dataclass
+class BindScenesToDagInput:
+    """Bind freshly-materialized Scene rows back to the seeded DAG nodes.
+
+    `seed_workflow_definition_activity` (run at the tail of analyze) creates
+    placeholder scene nodes with `data.scene_id=null` because there are no
+    Scene rows yet. When Generate runs and creates the actual scene rows,
+    this activity walks the DAG and stitches each node to its scene row
+    (matching on `data.n`), updating both the JSONB definition and the
+    projection FK.
+
+    Binding makes the FE's click→preview path resolve cleanly via
+    `data.scene_id` without falling back to n-matching heuristics.
+
+    Idempotent: only binds nodes whose `data.scene_id` is currently null,
+    so a re-run of Generate (or generating the second orientation) doesn't
+    clobber the existing binding.
+    """
+    project_id: str
+    orientation: str
+    scenes: list[CreatedScene]
+
+
+@dataclass
+class BindScenesToDagOutput:
+    bound_count: int
+
+
+@activity.defn(name="bind_scenes_to_dag")
+async def bind_scenes_to_dag_activity(
+    payload: BindScenesToDagInput,
+) -> BindScenesToDagOutput:
+    from app.db.repository.workflow_repository import WorkflowRepository
+    from sqlalchemy import update
+    from app.model.workflow_node_instance_model import WorkflowNodeInstance
+
+    factory = _session_factory()
+    async with factory() as session:
+        workflow_repo = WorkflowRepository(session)
+        workflow = await workflow_repo.get_by_project_id(payload.project_id)
+        if workflow is None or not workflow.definition:
+            activity.logger.info(
+                "bind_scenes_to_dag: project=%s has no workflow definition — skipping",
+                payload.project_id,
+            )
+            return BindScenesToDagOutput(bound_count=0)
+
+        # Build the n → scene_id map from the freshly-created scenes.
+        # Normalize for Temporal's dataclass→dict round-trip.
+        n_to_scene_id: dict[int, str] = {}
+        for s in payload.scenes:
+            if isinstance(s, dict):
+                n_to_scene_id[int(s["n"])] = str(s["scene_id"])
+            else:
+                n_to_scene_id[s.n] = s.scene_id
+
+        # Walk the JSONB definition, patch in scene_id where unbound.
+        # SQLAlchemy can't track in-place mutation of a JSONB column; rebuild
+        # the dict so the dirty check fires.
+        defn = dict(workflow.definition)
+        nodes = list(defn.get("nodes", []))
+        bound_node_to_scene: dict[str, str] = {}     # wni_id → scene_id
+        for i, raw_node in enumerate(nodes):
+            node = dict(raw_node)
+            data = dict(node.get("data") or {})
+            if data.get("type") != "scene":
+                continue
+            if data.get("scene_id"):                  # already bound (first-wins)
+                continue
+            n = data.get("n")
+            if n is None or int(n) not in n_to_scene_id:
+                continue
+            scene_id = n_to_scene_id[int(n)]
+            data["scene_id"] = scene_id
+            node["data"] = data
+            nodes[i] = node
+            bound_node_to_scene[str(node["id"])] = scene_id
+
+        if not bound_node_to_scene:
+            activity.logger.info(
+                "bind_scenes_to_dag: project=%s orientation=%s — nothing to bind "
+                "(no matching unbound scene nodes)",
+                payload.project_id, payload.orientation,
+            )
+            return BindScenesToDagOutput(bound_count=0)
+
+        defn["nodes"] = nodes
+        workflow.definition = defn
+        await workflow_repo.update(workflow)
+
+        # Mirror into the projection table (workflow_node_instance.scene_id).
+        for wni_id, scene_id in bound_node_to_scene.items():
+            await session.execute(
+                update(WorkflowNodeInstance)
+                .where(WorkflowNodeInstance.id == wni_id)
+                .values(scene_id=scene_id)
+            )
+        await session.commit()
+        activity.logger.info(
+            "bind_scenes_to_dag: project=%s orientation=%s bound=%d",
+            payload.project_id, payload.orientation, len(bound_node_to_scene),
+        )
+        return BindScenesToDagOutput(bound_count=len(bound_node_to_scene))
+
+
 @activity.defn(name="create_scenes")
 async def create_scenes_activity(payload: CreateScenesInput) -> CreateScenesOutput:
     """Persist N planned clips as Scene rows. Returns the assigned scene_ids."""

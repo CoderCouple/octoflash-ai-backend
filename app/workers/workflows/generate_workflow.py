@@ -43,10 +43,12 @@ with workflow.unsafe.imports_passed_through():
         plan_clips_activity,
     )
     from app.workers.activities.project_activity import (
+        BindScenesToDagInput,
         CreateScenesInput,
         CreateScenesOutput,
         PlannedClipDict,
         UpdateProjectInput,
+        bind_scenes_to_dag_activity,
         create_scenes_activity,
         update_project_activity,
     )
@@ -184,6 +186,23 @@ class GenerateVideoWorkflow:
                     ],
                 ),
                 start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=_DB_RETRY,
+            )
+
+            # ── 2b. BIND the new scenes back to the seeded DAG nodes ──
+            # Patches data.scene_id on each scene-typed node in
+            # workflow.definition so the FE can resolve clicks via the
+            # JSONB blob alone, instead of falling back to n-matching.
+            # Idempotent (first-bind-wins) so a second orientation's
+            # generate doesn't clobber the first.
+            await workflow.execute_activity(
+                bind_scenes_to_dag_activity,
+                BindScenesToDagInput(
+                    project_id=input.project_id,
+                    orientation=input.orientation,
+                    scenes=list(created.scenes),
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=_DB_RETRY,
             )
 

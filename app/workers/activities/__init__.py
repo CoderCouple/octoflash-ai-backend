@@ -13,6 +13,7 @@ from app.workers.activities.ffmpeg_concat_activity import ffmpeg_concat_activity
 from app.workers.activities.generate_clip_activity import generate_clip_activity
 from app.workers.activities.plan_activity import plan_clips_activity
 from app.workers.activities.project_activity import (
+    bind_scenes_to_dag_activity,
     create_scenes_activity,
     get_scene_cache_activity,
     persist_clip_result_activity,
@@ -27,6 +28,7 @@ ALL_ACTIVITIES = [
     # Plan + persist
     plan_clips_activity,
     create_scenes_activity,
+    bind_scenes_to_dag_activity,
     # Per-clip generate (fans out via asyncio.gather)
     generate_clip_activity,
     get_scene_cache_activity,

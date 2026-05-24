@@ -92,13 +92,14 @@ def get_speech_service():
     return service
 
 
-# ── ContextZero Logo (D-shape inside a ring) ────────────────────────────────
-def make_contextzero_logo(radius: float = 0.22) -> VGroup:
-    """Build the ContextZero logo: thick white ring with a white half-disc on the LEFT.
+# ── Octoflash Logo (D-shape inside a ring) ──────────────────────────────────
+def make_octoflash_logo(radius: float = 0.22) -> VGroup:
+    """Build the Octoflash brand mark: thick white ring with a white half-disc
+    on the LEFT hemisphere.
 
-    Matches the brand mark: outer circle outlined in white, left hemisphere
-    filled solid, right hemisphere hollow. From the viewer's perspective the
-    bright half is on the LEFT.
+    Outer circle is outlined in white; left hemisphere is filled solid; right
+    hemisphere is hollow. From the viewer's perspective the bright half is on
+    the LEFT.
     """
     ring_thickness = radius * 0.25
     inner_gap = radius * 0.4
@@ -123,6 +124,11 @@ def make_contextzero_logo(radius: float = 0.22) -> VGroup:
         stroke_width=0,
     )
     return VGroup(ring, d_shape)
+
+
+# Backwards-compat alias — existing generated Manim scripts call this name.
+# Removed in a future version once all stored scripts are regenerated.
+make_contextzero_logo = make_octoflash_logo
 
 
 def make_brand_watermark() -> VGroup:
@@ -404,15 +410,29 @@ def make_mcq_card(
     return VGroup(q_text, option_vgroup).move_to(ORIGIN)
 
 
-def outro_sequence(scene, text: str = "ContextZeroAI", duration: float = 3.0):
-    """End-card outro: big bold white 'ContextZeroAI' fills the frame."""
-    outro = Text(
-        text,
-        font_size=84,
-        color=TEXT_PRIMARY,
-        weight="BOLD",
-    )
-    outro.move_to(ORIGIN)
-    scene.play(FadeIn(outro, scale=0.9), run_time=0.8)
+def outro_sequence(
+    scene,
+    text: str = "Octoflash AI",
+    tagline: str = "Generated from one prompt.",
+    url: str = "Make yours at octoflash.ai",
+    duration: float = 3.0,
+):
+    """End-card outro: brand mark + tagline + call-to-action URL.
+
+    Layout (stacked, centered):
+        [ Octoflash AI ]                ← 84pt bold
+        Generated from one prompt.      ← 32pt, dimmed
+        Make yours at octoflash.ai      ← 28pt, dimmed
+
+    The `text` / `tagline` / `url` parameters keep the function reusable for
+    per-project end-cards while defaulting to the standard brand strings.
+    """
+    brand = Text(text, font_size=84, color=TEXT_PRIMARY, weight="BOLD")
+    line = Text(tagline, font_size=32, color=TEXT_PRIMARY).set_opacity(0.85)
+    link = Text(url, font_size=28, color=TEXT_PRIMARY).set_opacity(0.65)
+
+    stack = VGroup(brand, line, link).arrange(DOWN, buff=0.32).move_to(ORIGIN)
+
+    scene.play(FadeIn(stack, scale=0.9), run_time=0.8)
     scene.wait(max(0.1, duration - 1.6))
-    scene.play(FadeOut(outro), run_time=0.8)
+    scene.play(FadeOut(stack), run_time=0.8)
