@@ -24,6 +24,18 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Silence SQLAlchemy's chatty engine/pool/orm loggers — when DB_ECHO=true
+# is set on the engine, those will still emit (the level cap below applies
+# to the propagation through Python's root logger, not to the engine's
+# echo mechanism itself).
+for _name in (
+    "sqlalchemy.engine",
+    "sqlalchemy.pool",
+    "sqlalchemy.dialects",
+    "sqlalchemy.orm",
+):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 logger = logging.getLogger("app.workers")
 
 

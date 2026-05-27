@@ -19,6 +19,19 @@ logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# SQLAlchemy ships its own configured loggers — when DEBUG=true is set in
+# the env, the propagation to the root logger duplicates every SQL line
+# (once from sqlalchemy's default handler, once via basicConfig). Cap them
+# at WARNING unconditionally; set DB_ECHO=true on the engine if you
+# actually need wire-level query debugging.
+for _name in (
+    "sqlalchemy.engine",
+    "sqlalchemy.pool",
+    "sqlalchemy.dialects",
+    "sqlalchemy.orm",
+):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

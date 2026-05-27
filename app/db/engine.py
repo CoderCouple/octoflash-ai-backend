@@ -11,7 +11,7 @@ def get_async_engine():
     connect_args = {"ssl": "require"} if settings.db_ssl_require else {}
     return create_async_engine(
         settings.async_database_url,
-        echo=settings.debug,
+        echo=settings.db_echo,
         future=True,
         connect_args=connect_args,
     )
@@ -33,4 +33,4 @@ def get_sync_engine():
     """Lazily create a sync engine for Alembic migrations."""
     from sqlalchemy import create_engine
 
-    return create_engine(settings.sync_database_url, echo=settings.debug)
+    return create_engine(settings.sync_database_url, echo=settings.db_echo)

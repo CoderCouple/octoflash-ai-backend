@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     app_desc: str = "Scene-first Manim video editor API"
     app_version: str = "0.1.0"
     debug: bool = False
+    # Opt-in SQL echo. DEBUG=true alone used to switch it on, which made
+    # the worker log every SELECT/INSERT twice (sqlalchemy.engine + the
+    # mirrored app logger) and drowned real activity output. Now it's
+    # explicit — set DB_ECHO=true only when you actually want the wire
+    # log for a specific query bug.
+    db_echo: bool = False
     environment: str = "development"
 
     # Server
