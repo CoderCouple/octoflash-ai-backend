@@ -60,7 +60,7 @@ Rules:
     180-300s → 10-15 clips × 15-25s each (LANDSCAPE long-form)
 - First clip is the HOOK (≤6s) — visual, no narration ramp.
 - **Second-to-last clip MUST be an MCQ** (~8-10s): a multiple-choice question testing the central concept, followed by the answer reveal. Use `make_mcq_card(...)` styling — the script generator knows the helper. Phrase the `prompt` as: "Quick quiz: <question> with 3-4 options. Highlight the correct answer in green; dim the others. Voiceover reads the question, pauses, then narrates the answer."
-- Last clip is the OUTRO / takeaway (≤6s) — one punchy frame.
+- **Last clip MUST be the brand outro** (~3-4s): call `outro_sequence(self)` from app.manim_pipeline.styles. NO custom takeaway slide. The helper renders the "Octoflash AI / Generated from one prompt. / Make yours at octoflash.ai" end-card with the right typography. Set `title` to "Outro" and `prompt` to: "Render the Octoflash brand outro via `outro_sequence(self)`. No other content — the helper owns the entire frame."
 - Middle clips alternate: concept primer → analogy → comparison → recap.
 - Make EVERY clip prompt specify a primary visual element (axes/plot, diagram, formula, animated transition, MCQ card). Reject any "text-only slide" temptation.
 """
