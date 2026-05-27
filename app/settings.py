@@ -154,12 +154,12 @@ class Settings(BaseSettings):
     # first with anthropic as the fallback.
     #
     # Pull these once locally:
-    #   ollama pull qwen3.5:14b              # text — planner / script_gen
-    #   ollama pull qwen2.5-vl:7b            # vision — synthesize / evaluate / analyze_source
+    #   ollama pull qwen3:14b                # text — planner / script_gen
+    #   ollama pull qwen3-vl:8b              # vision — synthesize / evaluate / analyze_source
     # then set OLLAMA_BASE_URL=http://localhost:11434/v1 in .env.local.
     ollama_base_url: str = ""
-    ollama_text_model: str = "qwen3.5:14b"
-    ollama_vision_model: str = "qwen2.5-vl:7b"
+    ollama_text_model: str = "qwen3:14b"
+    ollama_vision_model: str = "qwen3-vl:8b"
     # Ollama doesn't enforce auth but LiteLLM rejects empty api_key on
     # /v1/chat/completions paths — pass any non-empty string.
     ollama_api_key: str = "ollama"
@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     # Example to pin script_gen to hosted-first while keeping the rest
     # local-first:
     #   ROUTING_SCRIPT_GEN_PRIMARY=anthropic/claude-opus-4-7
-    #   ROUTING_SCRIPT_GEN_FALLBACK=ollama/qwen3.5:14b
+    #   ROUTING_SCRIPT_GEN_FALLBACK=ollama_chat/qwen3:14b
 
     # ElevenLabs (voiceover via manim-voiceover inside the Manim subprocess)
     eleven_api_key: str = ""

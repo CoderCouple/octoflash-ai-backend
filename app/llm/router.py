@@ -15,7 +15,7 @@ under `uvicorn --reload` flow through without restart):
 
 Per-kind override via env:
 
-    ROUTING_<KIND>_PRIMARY   = "ollama/qwen3.5:14b"      (etc)
+    ROUTING_<KIND>_PRIMARY   = "ollama_chat/qwen3:14b"   (etc)
     ROUTING_<KIND>_FALLBACK  = "anthropic/claude-opus-4-7" | ""
 
 Falls back to defaults above when unset.
@@ -92,7 +92,7 @@ def _is_retriable(err: BaseException) -> bool:
 
 
 def _provider_of(model_spec: str) -> str:
-    """`"ollama/qwen3.5:14b"` → `"ollama"`. Anything before the first `/`."""
+    """`"ollama_chat/qwen3:14b"` → `"ollama_chat"`. Anything before the first `/`."""
     return model_spec.split("/", 1)[0]
 
 
@@ -106,7 +106,10 @@ def _default_primary(kind: CallKind) -> str:
         model = (
             settings.ollama_vision_model if is_vision(kind) else settings.ollama_text_model
         )
-        return f"ollama/{model}"
+        # `ollama_chat/` routes through Ollama's /api/chat (supports
+        # system + messages + vision properly). `ollama/` would hit
+        # /api/generate which has a different request shape.
+        return f"ollama_chat/{model}"
     return f"anthropic/{settings.script_model}"
 
 

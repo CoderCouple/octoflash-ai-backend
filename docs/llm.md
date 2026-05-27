@@ -24,16 +24,16 @@ Non-retriable errors (auth, malformed request) propagate as-is.
 
 ```bash
 brew install ollama && brew services start ollama
-ollama pull qwen3.5:14b       # text  — planner / script_gen / stream helper
-ollama pull qwen2.5-vl:7b     # vision — synthesize / evaluate / analyze_source
+ollama pull qwen3:14b       # text  — planner / script_gen / stream helper
+ollama pull qwen3-vl:8b     # vision — synthesize / evaluate / analyze_source
 ```
 
 Then in `.env.local`:
 
 ```
 OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_TEXT_MODEL=qwen3.5:14b
-OLLAMA_VISION_MODEL=qwen2.5-vl:7b
+OLLAMA_TEXT_MODEL=qwen3:14b
+OLLAMA_VISION_MODEL=qwen3-vl:8b
 LLM_FALLBACK_ENABLED=true
 ```
 
@@ -48,7 +48,7 @@ for that kind.
 
 ```
 ROUTING_SCRIPT_GEN_PRIMARY=anthropic/claude-opus-4-7
-ROUTING_SCRIPT_GEN_FALLBACK=ollama/qwen3.5:14b
+ROUTING_SCRIPT_GEN_FALLBACK=ollama_chat/qwen3:14b
 ```
 
 The six kinds: `CLIP_PLANNER`, `SCRIPT_GEN`, `SYNTHESIZE`,
@@ -63,7 +63,7 @@ flip the override:
 
 ```
 ROUTING_ANALYZE_SOURCE_PRIMARY=anthropic/claude-opus-4-7
-ROUTING_ANALYZE_SOURCE_FALLBACK=ollama/qwen2.5-vl:7b
+ROUTING_ANALYZE_SOURCE_FALLBACK=ollama_chat/qwen3-vl:8b
 ```
 
 with bad anthropic creds — log line becomes
