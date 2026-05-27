@@ -146,29 +146,70 @@ class BindScenesToDagOutput:
 async def bind_scenes_to_dag_activity(
     payload: BindScenesToDagInput,
 ) -> BindScenesToDagOutput:
+    from app.db.repository.project_repository import ProjectRepository
     from app.db.repository.workflow_repository import WorkflowRepository
     from sqlalchemy import update
     from app.model.workflow_node_instance_model import WorkflowNodeInstance
+    from app.workers.activities.seed_workflow_activity import (
+        SeedClip,
+        build_seed_dag,
+    )
 
     factory = _session_factory()
     async with factory() as session:
         workflow_repo = WorkflowRepository(session)
         workflow = await workflow_repo.get_by_project_id(payload.project_id)
-        if workflow is None or not workflow.definition:
+        if workflow is None:
             activity.logger.info(
-                "bind_scenes_to_dag: project=%s has no workflow definition — skipping",
+                "bind_scenes_to_dag: project=%s has no workflow row — skipping",
                 payload.project_id,
             )
             return BindScenesToDagOutput(bound_count=0)
 
-        # Build the n → scene_id map from the freshly-created scenes.
-        # Normalize for Temporal's dataclass→dict round-trip.
-        n_to_scene_id: dict[int, str] = {}
+        # Normalize scenes into a flat list of (n, scene_id, title, prompt, duration).
+        scenes_flat: list[tuple[int, str, str, str, float]] = []
         for s in payload.scenes:
             if isinstance(s, dict):
-                n_to_scene_id[int(s["n"])] = str(s["scene_id"])
+                scenes_flat.append((
+                    int(s["n"]), str(s["scene_id"]),
+                    str(s.get("title") or f"Clip {s['n']}"),
+                    str(s.get("prompt") or ""),
+                    float(s.get("duration") or 8.0),
+                ))
             else:
-                n_to_scene_id[s.n] = s.scene_id
+                scenes_flat.append(
+                    (s.n, s.scene_id, s.title, s.prompt, s.duration),
+                )
+
+        # Seed-from-scenes fallback: when analyze failed or never ran, the
+        # workflow.definition is empty. Generate just materialized real
+        # Scene rows — use them to seed the DAG so the user gets the
+        # source → analyze → N scenes → target graph after Generate, not
+        # just an empty canvas.
+        if not workflow.definition or not (workflow.definition.get("nodes") or []):
+            project_repo = ProjectRepository(session)
+            project = await project_repo.get_by_id(payload.project_id)
+            source_url = (project.source_url if project else None) or ""
+            clips = [
+                SeedClip(n=n, title=title, prompt=prompt, duration=duration, scene_id=scene_id)
+                for (n, scene_id, title, prompt, duration) in scenes_flat
+            ]
+            nodes, edges = await build_seed_dag(
+                session=session,
+                workflow_id=workflow.id,
+                source_url=source_url,
+                clips=clips,
+            )
+            await session.commit()
+            activity.logger.info(
+                "bind_scenes_to_dag: project=%s seeded-from-scenes nodes=%d edges=%d",
+                payload.project_id, nodes, edges,
+            )
+            return BindScenesToDagOutput(bound_count=len(clips))
+
+        # Existing-DAG bind path: workflow already has scene nodes (seeded
+        # by analyze). Patch in scene_id on each whose data.n matches.
+        n_to_scene_id: dict[int, str] = {n: sid for (n, sid, _, _, _) in scenes_flat}
 
         # Walk the JSONB definition, patch in scene_id where unbound.
         # SQLAlchemy can't track in-place mutation of a JSONB column; rebuild
