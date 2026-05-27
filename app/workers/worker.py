@@ -41,11 +41,19 @@ logger = logging.getLogger("app.workers")
 
 async def run() -> None:
     client = await connect_temporal()
+    # Default 100 (Temporal's normal) so hosted Anthropic gets the
+    # parallelism it can comfortably handle. Drop to 1 via env when
+    # running local-only against single-GPU Ollama, which serializes
+    # internally and would otherwise queue calls past LiteLLM's
+    # httpx timeout.
+    import os
+    max_act = int(os.environ.get("WORKER_MAX_CONCURRENT_ACTIVITIES", "100"))
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
         workflows=ALL_WORKFLOWS,
         activities=ALL_ACTIVITIES,
+        max_concurrent_activities=max_act,
     )
     logger.info(
         "Worker started — polling task queue %r against %s (%s)",
