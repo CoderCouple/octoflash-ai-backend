@@ -147,6 +147,32 @@ class Settings(BaseSettings):
     # The script generator uses Opus for long structured Manim code generation.
     script_model: str = "claude-opus-4-7"
 
+    # ── LLM router (app/llm) ────────────────────────────────────────────────
+    # Local LLM (any OpenAI-compatible server — Ollama, vLLM, LM Studio).
+    # When `ollama_base_url` is empty the router degrades to anthropic-only
+    # (today's behavior). When it's set, every CallKind defaults to local-
+    # first with anthropic as the fallback.
+    #
+    # Pull these once locally:
+    #   ollama pull qwen3.5:14b              # text — planner / script_gen
+    #   ollama pull qwen2.5-vl:7b            # vision — synthesize / evaluate / analyze_source
+    # then set OLLAMA_BASE_URL=http://localhost:11434/v1 in .env.local.
+    ollama_base_url: str = ""
+    ollama_text_model: str = "qwen3.5:14b"
+    ollama_vision_model: str = "qwen2.5-vl:7b"
+    # Ollama doesn't enforce auth but LiteLLM rejects empty api_key on
+    # /v1/chat/completions paths — pass any non-empty string.
+    ollama_api_key: str = "ollama"
+    # Master switch for the hosted fallback. With Ollama configured but
+    # llm_fallback_enabled=false the worker is offline-only.
+    llm_fallback_enabled: bool = True
+    # Per-CallKind override via raw env (so ops can flip one without a
+    # settings rebuild). See app/llm/kinds.py for the kind values.
+    # Example to pin script_gen to hosted-first while keeping the rest
+    # local-first:
+    #   ROUTING_SCRIPT_GEN_PRIMARY=anthropic/claude-opus-4-7
+    #   ROUTING_SCRIPT_GEN_FALLBACK=ollama/qwen3.5:14b
+
     # ElevenLabs (voiceover via manim-voiceover inside the Manim subprocess)
     eleven_api_key: str = ""
 

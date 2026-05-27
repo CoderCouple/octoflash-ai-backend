@@ -8,15 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
-from app.model.channel_model import Channel  # noqa: F401
-from app.model.channel_video_model import ChannelVideo  # noqa: F401
-from app.model.job_model import Job  # noqa: F401
-from app.model.project_model import Project  # noqa: F401
-from app.model.scene_instruction_model import SceneInstruction  # noqa: F401
-from app.model.scene_model import Scene  # noqa: F401
-from app.model.variation_model import Variation  # noqa: F401
-from app.model.workflow_edge_model import WorkflowEdge  # noqa: F401
-from app.model.workflow_node_model import WorkflowNode  # noqa: F401
+# Side-effect import: registers every current model on Base.metadata so
+# create_all picks them up. The pre-collapse fixtures hard-imported each
+# model name; the new layout has churn — use the package-level import
+# instead (every model_*.py file is re-exported there).
+import app.model  # noqa: F401
 
 ASYNC_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

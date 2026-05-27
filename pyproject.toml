@@ -34,6 +34,10 @@ pillow = "^11.0.0"
 manim-voiceover = {extras = ["elevenlabs"], version = "^0.3.7"}
 pyjwt = {extras = ["crypto"], version = "^2.8.0"}
 stripe = "^11.0.0"
+# LLM router (app/llm) — unifies Anthropic + Ollama (+ vLLM / LM Studio
+# via the same OpenAI-compatible adapter). Local-first when
+# OLLAMA_BASE_URL is set, hosted-only otherwise.
+litellm = "^1.55.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
