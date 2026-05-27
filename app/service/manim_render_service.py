@@ -209,32 +209,12 @@ class ManimRenderService:
             except Exception as e:
                 logger.error("attempt 1 failed: %s", str(e)[:500])
 
-        # Attempt 1b — fresh voice retry with feedback (one retry before downgrading)
-        if result is None and brief.voiceover:
-            try:
-                logger.info("attempt 1b: fresh voice retry")
-                fresh = await generate_episode_script(
-                    transcript=brief.transcript,
-                    description=brief.description,
-                    duration=brief.duration,
-                    title=brief.title,
-                    video_id=brief.clip_id,
-                    voiceover=True,
-                    source_frames=brief.source_frames or None,
-                    manin_prompt=brief.manim_prompt,
-                    feedback=(
-                        "Previous attempt crashed at render. Generate simpler, "
-                        "defensive code. Keep voiceover blocks."
-                    ),
-                    orientation=brief.orientation,
-                )
-                result = await self._render_scene_subprocess(
-                    brief.clip_id, fresh, brief.quality, portrait, brief.voice_id,
-                )
-                scene_code, method = fresh, RenderMethod.CLAUDE_VOICE_RETRY
-                script_file_path = save_script(brief.clip_id, fresh)
-            except Exception as e:
-                logger.error("attempt 1b failed: %s", str(e)[:500])
+        # NOTE: previous "attempt 1b — fresh voice retry" removed to save cost.
+        # Empirically the fresh-voice regenerate rarely succeeded when the
+        # original voice script crashed (same model + same context → same
+        # mistakes). The cheaper strip_voiceover fallback below catches the
+        # common voiceover/ElevenLabs crashes; the fresh no-voice fallback
+        # handles deeper Manim issues.
 
         # Attempt 2 — strip voiceover from original Claude script
         if result is None and claude_code:
@@ -274,7 +254,7 @@ class ManimRenderService:
 
         if result is None or scene_code is None or method is None:
             raise RenderError(
-                f"All 4 render attempts failed for clip {brief.clip_id} "
+                f"All 3 render attempts failed for clip {brief.clip_id} "
                 "— see logs for per-attempt failure details."
             )
 

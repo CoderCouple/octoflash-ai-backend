@@ -47,7 +47,10 @@ def _provider_kwargs(model: str) -> dict[str, Any]:
     return {}
 
 
-def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_messages(
+    messages: list[dict[str, Any]],
+    target_model: str,
+) -> list[dict[str, Any]]:
     """Convert Anthropic content blocks to OpenAI-compatible ones.
 
     LiteLLM validates messages in OpenAI shape before dispatching, so
@@ -55,7 +58,12 @@ def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     blocks fail validation even when the target is Anthropic. Convert
     image blocks to `{type: image_url, image_url: {url: data:…;base64,…}}`
     (which LiteLLM re-maps back to Anthropic's format on the way out).
+
+    `cache_control` on text blocks is preserved when the target is
+    Anthropic (LiteLLM passes it through to enable prompt caching) and
+    stripped otherwise (non-Anthropic providers reject the unknown key).
     """
+    is_anthropic = target_model.startswith("anthropic/")
     out: list[dict[str, Any]] = []
     for msg in messages:
         content = msg.get("content")
@@ -85,10 +93,10 @@ def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 else:
                     new_content.append(block)
             elif btype == "text":
-                # Strip Anthropic-only `cache_control` from inline text
-                # blocks — keeping it confuses LiteLLM's validator on the
-                # OpenAI path.
-                new_content.append({"type": "text", "text": block.get("text", "")})
+                text_block: dict[str, Any] = {"type": "text", "text": block.get("text", "")}
+                if is_anthropic and "cache_control" in block:
+                    text_block["cache_control"] = block["cache_control"]
+                new_content.append(text_block)
             else:
                 new_content.append(block)
         out.append({**msg, "content": new_content})
@@ -160,7 +168,7 @@ async def acompletion(
     """
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_messages(messages),
+        "messages": _normalize_messages(messages, model),
         "max_tokens": max_tokens,
         "temperature": temperature,
         **_provider_kwargs(model),
@@ -206,7 +214,7 @@ async def astream(
     full concatenated text + done=True so the caller can persist."""
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_messages(messages),
+        "messages": _normalize_messages(messages, model),
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,

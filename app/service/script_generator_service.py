@@ -567,11 +567,14 @@ async def _stream_message_text(
     detected here (the caller's validator catches truncated Python).
     """
     chunks: list[str] = []
+    # 900s budget — local vision models can take 30-60s processing images
+    # before emitting the first token, well past LiteLLM's 120s default.
     async for chunk in stream(
         kind=CallKind.SCRIPT_GEN,
         system=system,
         messages=messages,
         max_tokens=max_tokens,
+        timeout=900,
     ):
         if chunk.done:
             logger.info(
@@ -776,11 +779,26 @@ async def generate_episode_script(
             "text": "Above are sample frames from the SOURCE video. Match this visual style: dark background, clean typography, mathematical formulas, animated graphs/plots, persistent title at top, subtitle text at bottom.\n\n",
         })
 
-    task = (
-        f"## Video Info\n"
-        f"- **Title**: {title}\n"
-        f"- **Duration**: {duration:.1f} seconds\n"
-        f"- **Video ID**: {video_id}\n\n"
+    # Split the user message into two pieces so Anthropic's prompt cache
+    # works across all clips in a workflow:
+    #
+    #   1. `project_context`  — everything that's identical for every clip
+    #      of the project (transcript, description, creative direction,
+    #      orientation-derived depth_block). Marked with cache_control so
+    #      clips 2-N pay ~10% of the input cost on this prefix.
+    #   2. `clip_info`        — per-clip variable bits (title, duration,
+    #      video_id, voiceover instruction). Not cached.
+    #
+    # Feedback gets appended further down in `_one_attempt` so it stays
+    # outside the cache too. Voiceover lives in `clip_info` because the
+    # render-fallback chain re-calls this function with voiceover=False
+    # on attempt 3 — keeping it out of the cached prefix means that
+    # retry still gets the cache hit.
+
+    # Detect multi-video synthesis from manin_prompt (affects task wording)
+    is_multi_video = manin_prompt and "## Multi-Video Synthesis" in manin_prompt
+
+    project_context = (
         f"## Transcript\n{transcript}\n\n"
         f"## Visual Description (the SOURCE video's scenes — for INSPIRATION ONLY)\n{description}\n\n"
         f"⚠️ The Visual Description above describes the SOURCE video's scenes. "
@@ -789,15 +807,8 @@ async def generate_episode_script(
         f"ELI5 frames, mind maps, MCQs, side-by-side comparisons, recaps. Each of your scenes is ~7.5s, "
         f"so a 5-minute output has ~40 scenes regardless of how many the source has.\n\n"
     )
-
-    # Detect multi-video synthesis from manin_prompt
-    is_multi_video = manin_prompt and "## Multi-Video Synthesis" in manin_prompt
-
     if manin_prompt:
-        task += f"## Creative Direction (User-Edited Prompt)\n{manin_prompt}\n\n"
-
-    if feedback:
-        task += f"## IMPROVEMENT FEEDBACK (from previous iteration)\n{feedback}\n\n"
+        project_context += f"## Creative Direction (User-Edited Prompt)\n{manin_prompt}\n\n"
 
     # Orientation-aware sizing — target ~7-8 seconds per scene for rapid-fire pacing
     is_portrait = (orientation or "portrait").lower() == "portrait"
@@ -852,29 +863,49 @@ async def generate_episode_script(
             f"  - self.wait(0.3) max between animations.\n"
         )
 
+    # depth_block is orientation-stable (same for every clip in this
+    # orientation-pinned workflow) — fold it into the cached prefix.
+    project_context += f"{depth_block}\n"
+    project_context += (
+        "Keep animations FAST: run_time=0.5 for transitions, "
+        "run_time=1-2 for main animations. NO long pauses — add more SECTIONS instead.\n"
+        "Match 3Blue1Brown visual quality.\n"
+    )
+
+    # ── Cached project-stable prefix ──
+    content.append({
+        "type": "text",
+        "text": project_context,
+        "cache_control": {"type": "ephemeral"},
+    })
+
+    # ── Per-clip variable block (uncached) ──
     if is_multi_video:
-        task += (
+        clip_info = (
+            f"## Video Info\n"
+            f"- **Title**: {title}\n"
+            f"- **Duration**: {duration:.1f} seconds\n"
+            f"- **Video ID**: {video_id}\n\n"
             f"## Task\n"
             f"Write a complete Manim scene script for this **unified multi-video concept explainer**.\n"
             f"CRITICAL: The Creative Direction above contains a section outline from concept synthesis. "
             f"Follow that outline EXACTLY — each section must cover the specified concepts using the specified visual type.\n"
             f"The animation must feel like ONE cohesive explainer, NOT separate summaries stitched together.\n"
-            f"{'Use OctoflashScene with voiceover.' if voiceover else 'Use OctoflashSceneNoVoice (no voiceover). Add self.wait() calls between animations.'}\n\n"
-            f"{depth_block}\n"
-            f"Keep animations FAST: run_time=0.5 for transitions, run_time=1-2 for main animations. NO long pauses — add more SECTIONS instead.\n"
-            f"Match 3Blue1Brown visual quality."
+            f"{'Use OctoflashScene with voiceover.' if voiceover else 'Use OctoflashSceneNoVoice (no voiceover). Add self.wait() calls between animations.'}\n"
         )
     else:
-        task += (
+        clip_info = (
+            f"## Video Info\n"
+            f"- **Title**: {title}\n"
+            f"- **Duration**: {duration:.1f} seconds\n"
+            f"- **Video ID**: {video_id}\n\n"
             f"## Task\n"
             f"Write a complete Manim scene script for this educational content.\n"
-            f"{'Use OctoflashScene with voiceover.' if voiceover else 'Use OctoflashSceneNoVoice (no voiceover). Add self.wait() calls between animations.'}\n\n"
-            f"{depth_block}\n"
-            f"Keep animations FAST: run_time=0.5 for transitions, run_time=1-2 for main animations. NO long pauses — add more SECTIONS instead.\n"
-            f"Match 3Blue1Brown visual quality."
+            f"{'Use OctoflashScene with voiceover.' if voiceover else 'Use OctoflashSceneNoVoice (no voiceover). Add self.wait() calls between animations.'}\n"
         )
-
-    content.append({"type": "text", "text": task})
+    if feedback:
+        clip_info += f"\n## IMPROVEMENT FEEDBACK (from previous iteration)\n{feedback}\n"
+    content.append({"type": "text", "text": clip_info})
 
     # Landscape (long-form) needs much more room — up to ~40 scenes of code.
     # Opus 4.7 supports 64K output tokens natively. We were hitting truncation at 32K.
@@ -920,7 +951,10 @@ async def generate_episode_script(
         return sanitize_script(extracted)
 
     # Validator drives the retry loop — banned/required patterns + syntax check.
-    code, validator_errors = await validator_retry(_one_attempt, max_attempts=3)
+    # Cap at 2 validator attempts (was 3): historically the 3rd rarely
+    # recovers what attempts 1+2 missed, and each attempt is a full Claude
+    # round-trip. Drop saves ~$0.10/clip on the worst path.
+    code, validator_errors = await validator_retry(_one_attempt, max_attempts=2)
 
     if validator_errors:
         # Last-resort syntax check: if even the final attempt is broken, fail hard
