@@ -231,9 +231,11 @@ class GenerateVideoWorkflow:
                         quality=input.quality,
                         source_frame_paths=input.source_frame_paths,
                     ),
-                    # Single clip: script_gen (~75s) + render (~35s) + eval (~25s) ≈ 2-5 min
+                    # Single clip: script_gen (~75s) + render (~35s) + eval (~25s) ≈ 2-5 min.
+                    # No heartbeat_timeout — the activity doesn't call
+                    # activity.heartbeat(), and applying a heartbeat budget
+                    # without heartbeats causes spurious cancellations mid-stream.
                     start_to_close_timeout=timedelta(minutes=15),
-                    heartbeat_timeout=timedelta(minutes=2),
                     retry_policy=_CLIP_RETRY,
                 )
                 for s in created.scenes

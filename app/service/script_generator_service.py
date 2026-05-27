@@ -567,14 +567,11 @@ async def _stream_message_text(
     detected here (the caller's validator catches truncated Python).
     """
     chunks: list[str] = []
-    # 900s budget — local vision models can take 30-60s processing images
-    # before emitting the first token, well past LiteLLM's 120s default.
     async for chunk in stream(
         kind=CallKind.SCRIPT_GEN,
         system=system,
         messages=messages,
         max_tokens=max_tokens,
-        timeout=900,
     ):
         if chunk.done:
             logger.info(
