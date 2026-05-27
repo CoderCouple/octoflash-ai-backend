@@ -24,9 +24,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-import anthropic
-
-from app.settings import settings
+from app.llm import CallKind, ask
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +65,6 @@ Rules:
 
 
 class ClipPlannerService:
-    def __init__(self) -> None:
-        self.model = settings.script_model or "claude-opus-4-7"
-        self.api_key = settings.anthropic_api_key
-
-    def _client(self) -> anthropic.AsyncAnthropic:
-        if not self.api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        return anthropic.AsyncAnthropic(api_key=self.api_key)
-
     async def plan(
         self,
         transcript: str,
@@ -107,19 +96,21 @@ class ClipPlannerService:
             "transcript_chars=%d",
             target_duration, orientation, max_clips, len(transcript),
         )
-        client = self._client()
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=4096,
+        result = await ask(
+            kind=CallKind.CLIP_PLANNER,
             system=[{
                 "type": "text",
                 "text": _SYSTEM,
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": user_msg}],
+            max_tokens=4096,
         )
-
-        raw = response.content[0].text.strip()
+        logger.info(
+            "ClipPlannerService.plan: provider=%s model=%s fell_back=%s",
+            result.provider_used, result.model_used, result.fell_back,
+        )
+        raw = result.text.strip()
         # Strip accidental code fences
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)

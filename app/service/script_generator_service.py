@@ -22,16 +22,13 @@ import re
 import subprocess
 from pathlib import Path
 
-import anthropic
-
+from app.llm import CallKind, ask, stream
 from app.service.validator_service import generate_with_retry as validator_retry
 from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
 STORAGE_DIR = Path(settings.local_storage_path or "storage").resolve()
-
-CLAUDE_MODEL = settings.script_model or "claude-opus-4-7"
 
 SYSTEM_PROMPT = r"""You are an expert Manim Community Edition animator. You produce 3Blue1Brown-quality educational animations — NOT text slides. Every scene MUST have Axes/graphs, MathTex formulas, animated diagrams, and dynamic ValueTracker animations.
 
@@ -541,20 +538,6 @@ SYSTEM_PROMPT_NO_VOICE = SYSTEM_PROMPT.replace(
 )
 
 
-_client_cache: anthropic.AsyncAnthropic | None = None
-
-
-def _get_client() -> anthropic.AsyncAnthropic:
-    """Process-cached AsyncAnthropic client. Safe to call repeatedly."""
-    global _client_cache
-    if _client_cache is None:
-        api_key = settings.anthropic_api_key
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set (settings.anthropic_api_key is empty)")
-        _client_cache = anthropic.AsyncAnthropic(api_key=api_key)
-    return _client_cache
-
-
 def _system_blocks(prompt: str) -> list[dict]:
     """Render the system prompt as a single cache-marked block.
 
@@ -567,41 +550,38 @@ def _system_blocks(prompt: str) -> list[dict]:
 
 
 async def _stream_message_text(
-    client: anthropic.AsyncAnthropic,
     *,
-    model: str,
     max_tokens: int,
     system: list[dict] | str,
     messages: list,
 ) -> tuple[str, str]:
-    """Run a Claude message via streaming and return (text, stop_reason).
+    """Run an LLM message via streaming and return (text, stop_reason).
 
-    Streaming is mandatory for large `max_tokens` (>~16K) to avoid SDK HTTP
-    timeouts. Returns the assembled text + final stop_reason so callers can
-    detect truncation (`stop_reason == 'max_tokens'`).
+    Routes through `app.llm.stream` so Ollama / Anthropic are picked by
+    the per-CallKind config (SCRIPT_GEN by default; stream-only helper
+    callers can override via the kind=… kwarg above this function).
+
+    Stop reason is approximate — LiteLLM normalizes across providers but
+    doesn't always expose the underlying `stop_reason`. We return
+    `"end_turn"` when the stream completes normally; truncation isn't
+    detected here (the caller's validator catches truncated Python).
     """
-    async with client.messages.stream(
-        model=model,
-        max_tokens=max_tokens,
+    chunks: list[str] = []
+    async for chunk in stream(
+        kind=CallKind.SCRIPT_GEN,
         system=system,
         messages=messages,
-    ) as stream:
-        chunks: list[str] = []
-        async for chunk in stream.text_stream:
-            chunks.append(chunk)
-        final = await stream.get_final_message()
-        # Log cache hit/miss so we can verify the cache_control breakpoint is paying off.
-        usage = getattr(final, "usage", None)
-        if usage is not None:
+        max_tokens=max_tokens,
+    ):
+        if chunk.done:
             logger.info(
-                "claude stream: in=%s cache_read=%s cache_write=%s out=%s stop=%s",
-                getattr(usage, "input_tokens", None),
-                getattr(usage, "cache_read_input_tokens", None),
-                getattr(usage, "cache_creation_input_tokens", None),
-                getattr(usage, "output_tokens", None),
-                final.stop_reason,
+                "llm stream: provider=%s model=%s fell_back=%s chars=%d",
+                chunk.provider_used, chunk.model_used, chunk.fell_back,
+                len(chunk.text or ""),
             )
-        return "".join(chunks), (final.stop_reason or "end_turn")
+            break
+        chunks.append(chunk.delta)
+    return "".join(chunks), "end_turn"
 
 
 SYNTHESIS_PROMPT = r"""You are an expert educational content synthesizer. Given transcripts from multiple YouTube videos on related topics, you must:
@@ -651,8 +631,6 @@ async def synthesize_concepts(
     Returns:
         Dict with: title, core_concepts, narrative_arc, section_outline, mcq, combined_transcript
     """
-    client = _get_client()
-
     content = []
 
     # Include sample frames if available
@@ -696,16 +674,19 @@ async def synthesize_concepts(
         ),
     })
 
-    logger.info("Calling Claude API for concept synthesis (%d videos)", len(transcripts))
+    logger.info("Calling LLM for concept synthesis (%d videos)", len(transcripts))
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=4096,
+    result = await ask(
+        kind=CallKind.SYNTHESIZE,
         system=SYNTHESIS_PROMPT,
         messages=[{"role": "user", "content": content}],
+        max_tokens=4096,
     )
-
-    raw_text = response.content[0].text.strip()
+    logger.info(
+        "synthesize_concepts: provider=%s model=%s fell_back=%s",
+        result.provider_used, result.model_used, result.fell_back,
+    )
+    raw_text = result.text.strip()
 
     # Strip markdown code fences if Claude added them
     if raw_text.startswith("```"):
@@ -775,7 +756,6 @@ async def generate_episode_script(
         source_frames: Optional list of source frame paths to send as vision input.
         feedback: Optional feedback from a previous iteration to improve the script.
     """
-    client = _get_client()
     system = SYSTEM_PROMPT if voiceover else SYSTEM_PROMPT_NO_VOICE
 
     # Build user message content (text + optional images)
@@ -916,12 +896,10 @@ async def generate_episode_script(
             })
 
         logger.info(
-            "Calling Claude API for script generation (video_id=%s, voiceover=%s, has_feedback=%s)",
+            "Calling LLM for script generation (video_id=%s, voiceover=%s, has_feedback=%s)",
             video_id, voiceover, validator_feedback is not None,
         )
         raw, stop = await _stream_message_text(
-            client,
-            model=CLAUDE_MODEL,
             max_tokens=max_out_tokens,
             system=_system_blocks(system),
             messages=[{"role": "user", "content": attempt_content}],
@@ -987,8 +965,6 @@ async def evaluate_output(
     Returns:
         dict with 'score' (1-10), 'passed' (bool), and 'feedback' (str).
     """
-    client = _get_client()
-
     content = []
 
     # --- SOURCE FRAMES (what the output should look like) ---
@@ -1045,13 +1021,16 @@ async def evaluate_output(
         ),
     })
 
-    response = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=2048,
+    eval_result = await ask(
+        kind=CallKind.EVALUATE,
         messages=[{"role": "user", "content": content}],
+        max_tokens=2048,
     )
-
-    result_text = response.content[0].text
+    logger.info(
+        "evaluate_output: provider=%s model=%s fell_back=%s",
+        eval_result.provider_used, eval_result.model_used, eval_result.fell_back,
+    )
+    result_text = eval_result.text
     score = 5  # default
     feedback = ""
 
@@ -1131,11 +1110,10 @@ async def analyze_source_frames(
     Returns:
         Rich visual description of the source video.
     """
-    try:
-        client = _get_client()
-    except RuntimeError:
-        logger.warning("No ANTHROPIC_API_KEY — returning basic description")
-        return _basic_description(transcript, frame_paths, duration)
+    # No upfront API-key check — the router handles missing-provider errors
+    # (anthropic-only path: AuthenticationError; local-first path: ollama
+    # connection refused → fallback to hosted; if both fail the except
+    # below catches it).
 
     # Sample ~8 frames evenly
     full_paths = [STORAGE_DIR / f for f in frame_paths]
@@ -1171,13 +1149,17 @@ async def analyze_source_frames(
     })
 
     try:
-        response = await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2048,
+        analyze_result = await ask(
+            kind=CallKind.ANALYZE_SOURCE,
             messages=[{"role": "user", "content": content}],
+            max_tokens=2048,
         )
-        description = response.content[0].text
-        logger.info("Vision-based frame analysis complete (%d chars)", len(description))
+        description = analyze_result.text
+        logger.info(
+            "analyze_source_frames: provider=%s model=%s fell_back=%s chars=%d",
+            analyze_result.provider_used, analyze_result.model_used,
+            analyze_result.fell_back, len(description),
+        )
         return description
     except Exception as e:
         logger.warning("Vision analysis failed: %s — returning basic description", e)

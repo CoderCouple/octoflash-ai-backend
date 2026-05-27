@@ -212,16 +212,18 @@ async def stream(
     chain = _chain_for(kind)
     last_err: BaseException | None = None
     for attempt_idx, model in enumerate(chain):
+        agen = litellm_adapter.astream(
+            model=model,
+            messages=messages,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+        yielded_any = False
         try:
-            agen = litellm_adapter.astream(
-                model=model,
-                messages=messages,
-                system=system,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                timeout=timeout,
-            )
             async for ad_chunk in agen:
+                yielded_any = True
                 yield StreamChunk(
                     delta=ad_chunk.delta,
                     done=ad_chunk.done,
@@ -233,7 +235,14 @@ async def stream(
             return
         except Exception as e:  # noqa: BLE001
             last_err = e
-            if attempt_idx + 1 < len(chain) and _is_retriable(e):
+            # Only fall back if we haven't started emitting deltas yet —
+            # otherwise the consumer would receive duplicate / spliced output
+            # from two providers. Mid-stream errors propagate.
+            if (
+                not yielded_any
+                and attempt_idx + 1 < len(chain)
+                and _is_retriable(e)
+            ):
                 log.warning(
                     "LLM router (stream): kind=%s primary=%s raised %s — falling back to %s",
                     kind.value, model, type(e).__name__, chain[attempt_idx + 1],
