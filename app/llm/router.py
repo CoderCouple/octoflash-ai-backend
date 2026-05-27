@@ -49,7 +49,7 @@ class AskResult:
 @dataclass
 class StreamChunk:
     """Streamed delta from `stream()`. `done=True` on the final chunk
-    carries the full concatenated `text` + `model_used`."""
+    carries the full concatenated `text` + `model_used` + `usage`."""
 
     delta: str
     done: bool = False
@@ -57,6 +57,32 @@ class StreamChunk:
     model_used: str | None = None
     provider_used: str | None = None
     fell_back: bool = False
+    usage: dict[str, Any] | None = None
+
+
+def _log_usage(kind: CallKind, model: str, fell_back: bool, usage: dict[str, Any] | None) -> None:
+    """Single-line per-call billing summary. Keys present depend on the
+    provider — Anthropic gives cache_creation / cache_read; OpenAI-compat
+    gives prompt_tokens_details.cached_tokens; Ollama gives nothing.
+
+    Format: `LLM usage kind=X model=Y fell_back=Z input=N cache_write=N
+    cache_read=N output=N`. Pipe through `grep "LLM usage"` to roll up.
+    """
+    if not usage:
+        log.info("LLM usage kind=%s model=%s fell_back=%s usage=none", kind.value, model, fell_back)
+        return
+    inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+    out = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+    cache_write = usage.get("cache_creation_input_tokens") or 0
+    cache_read = (
+        usage.get("cache_read_input_tokens")
+        or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        or 0
+    )
+    log.info(
+        "LLM usage kind=%s model=%s fell_back=%s input=%s cache_write=%s cache_read=%s output=%s",
+        kind.value, model, fell_back, inp, cache_write, cache_read, out,
+    )
 
 
 # Errors that mean "this provider is unhealthy — try the next one in the
@@ -163,6 +189,7 @@ async def ask(
     max_tokens: int = 4096,
     temperature: float = 0.7,
     timeout: float | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> AskResult:
     """Non-streaming. Walk the chain on retriable errors; raise the last
     error if every entry fails."""
@@ -177,7 +204,9 @@ async def ask(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 timeout=timeout,
+                response_format=response_format,
             )
+            _log_usage(kind, model, attempt_idx > 0, result.usage)
             return AskResult(
                 text=result.text,
                 model_used=result.model_used,
@@ -227,6 +256,8 @@ async def stream(
         try:
             async for ad_chunk in agen:
                 yielded_any = True
+                if ad_chunk.done:
+                    _log_usage(kind, model, attempt_idx > 0, ad_chunk.usage)
                 yield StreamChunk(
                     delta=ad_chunk.delta,
                     done=ad_chunk.done,
@@ -234,6 +265,7 @@ async def stream(
                     model_used=ad_chunk.model_used,
                     provider_used=_provider_of(model) if ad_chunk.done else None,
                     fell_back=attempt_idx > 0 if ad_chunk.done else False,
+                    usage=ad_chunk.usage if ad_chunk.done else None,
                 )
             return
         except Exception as e:  # noqa: BLE001
