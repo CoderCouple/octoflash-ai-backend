@@ -18,7 +18,7 @@ from app.api.v1.response.source_response import (
     SourceResponse,
     SourceVideoResponse,
 )
-from app.common.enum.source import SourceVideoKind
+from app.common.enum.source import SourcePlatform, SourceVideoKind
 from app.common.exceptions import EntityNotFoundError
 from app.db.repository.source_repository import SourceRepository
 from app.db.repository.source_video_repository import SourceVideoRepository
@@ -57,16 +57,93 @@ class SourceService:
     async def create(
         self, body: CreateSourceRequest, user_id: str | None = None
     ) -> SourceResponse:
+        """Create (or re-use) a Source from just a URL.
+
+        Resolves the URL via the platform fetcher (yt-dlp for YouTube),
+        merges the fetched metadata with any fields the client supplied
+        (client wins for non-empty overrides), and de-dupes by
+        (user_id, platform, external_id).
+        """
+        owner = user_id or settings.default_user_id
+        source_url = str(body.source_url)
+
+        # Resolve channel metadata server-side. yt-dlp is blocking → to_thread.
+        fetched: dict = {}
+        if body.platform == SourcePlatform.YOUTUBE:
+            try:
+                fetched = await asyncio.to_thread(
+                    get_youtube_fetcher().fetch_channel_metadata, source_url,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("SourceService.create: fetcher failed for %s: %s", source_url, e)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Could not resolve {body.platform.value} URL: {e}",
+                ) from e
+        else:
+            # IG / TikTok / etc — no fetcher wired yet. Require the client
+            # to supply at least a name (so we don't silently store an
+            # un-named row).
+            if not body.name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"{body.platform.value} fetcher not yet wired — "
+                        "pass `name` explicitly until OAuth-backed ingest lands."
+                    ),
+                )
+
+        # Client-supplied values win over fetched ones; for everything else
+        # fall back to the fetcher payload.
+        external_id = body.external_id or fetched.get("external_id")
+        name = body.name or fetched.get("title") or "Untitled source"
+
+        # De-dupe by (user, platform, channel-id) so re-pasting the same URL
+        # refreshes the row instead of creating a duplicate.
+        if external_id:
+            existing = await self.source_repo.get_by_platform_external_id(
+                owner, body.platform.value, external_id,
+            )
+            if existing is not None:
+                existing.source_url = source_url
+                if name:
+                    existing.name = name
+                if body.handle or fetched.get("handle"):
+                    existing.handle = body.handle or fetched.get("handle")
+                desc = body.description or fetched.get("description")
+                if desc:
+                    existing.description = desc
+                thumb = (
+                    str(body.thumbnail_url) if body.thumbnail_url
+                    else fetched.get("thumbnail_url")
+                )
+                if thumb:
+                    existing.thumbnail_url = thumb
+                subs = (
+                    body.subscriber_count if body.subscriber_count is not None
+                    else fetched.get("subscriber_count")
+                )
+                if subs is not None:
+                    existing.subscriber_count = subs
+                existing = await self.source_repo.update(existing)
+                return SourceResponse.model_validate(existing)
+
         source = Source(
-            user_id=user_id or settings.default_user_id,
+            user_id=owner,
             platform=body.platform,
-            source_url=str(body.source_url),
-            external_id=body.external_id,
-            handle=body.handle,
-            name=body.name,
-            description=body.description,
-            thumbnail_url=str(body.thumbnail_url) if body.thumbnail_url else None,
-            subscriber_count=body.subscriber_count,
+            source_url=source_url,
+            external_id=external_id,
+            handle=body.handle or fetched.get("handle"),
+            name=name,
+            description=body.description or fetched.get("description"),
+            thumbnail_url=(
+                str(body.thumbnail_url) if body.thumbnail_url
+                else fetched.get("thumbnail_url")
+            ),
+            subscriber_count=(
+                body.subscriber_count if body.subscriber_count is not None
+                else fetched.get("subscriber_count")
+            ),
             accent_color=body.accent_color,
         )
         source = await self.source_repo.create(source)

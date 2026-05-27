@@ -6,15 +6,17 @@ from app.common.enum.source import SourcePlatform
 
 
 class CreateSourceRequest(BaseModel):
-    """Create a Source from a channel URL + (optionally) pre-fetched metadata.
+    """Create a Source from a channel URL.
 
-    When the YouTube fetcher lands, the server will pull metadata itself; for
-    now the client passes whatever it has and the row is saved verbatim.
+    Only `source_url` is required — the server resolves the channel via the
+    platform's fetcher (yt-dlp for YouTube) and fills in name / handle /
+    external_id / thumbnail / subscriber count. Any field the client
+    explicitly provides overrides the fetched value.
     """
 
     source_url: HttpUrl
     platform: SourcePlatform = SourcePlatform.YOUTUBE
-    name: str = Field(..., min_length=1, max_length=255)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     external_id: str | None = Field(default=None, max_length=128)
     handle: str | None = Field(default=None, max_length=128)
     description: str | None = None

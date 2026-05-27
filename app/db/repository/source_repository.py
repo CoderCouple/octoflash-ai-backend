@@ -35,6 +35,21 @@ class SourceRepository:
         )
         return list(result.scalars().all()), total
 
+    async def get_by_platform_external_id(
+        self, user_id: str, platform: str, external_id: str
+    ) -> Source | None:
+        """Find an existing source for (user, platform, channel-id). Used
+        on create to de-dupe re-pastes of the same channel URL."""
+        result = await self.db.execute(
+            select(Source).where(
+                Source.user_id == user_id,
+                Source.platform == platform,
+                Source.external_id == external_id,
+                Source.is_deleted == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def create(self, source: Source) -> Source:
         self.db.add(source)
         await self.db.flush()
