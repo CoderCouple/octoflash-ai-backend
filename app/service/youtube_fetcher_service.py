@@ -39,6 +39,20 @@ from app.settings import settings
 log = logging.getLogger(__name__)
 
 
+def _normalize_yt_thumbnail(url: str | None) -> str | None:
+    """yt-dlp returns channel avatars with `=s0` (original-size) URLs that
+    can be huge and inconsistent. Normalize the size token to s256-c so
+    the FE gets a predictable 256×256 crop suitable for an avatar slot."""
+    if not url:
+        return url
+    # googleusercontent URLs use `=sN` or `=sN-cN-...` parameters. Strip
+    # everything after the first `=` and append a known-good size token.
+    if "googleusercontent" in url and "=" in url:
+        base = url.split("=", 1)[0]
+        return f"{base}=s256-c"
+    return url
+
+
 class YouTubeFetcherService:
     """Channel metadata + channel-uploads listing via yt-dlp (or Data API v3
     when a key is configured)."""
@@ -94,7 +108,9 @@ class YouTubeFetcherService:
             "handle":      payload.get("uploader_id") or payload.get("channel"),
             "title":       payload.get("channel") or payload.get("title") or "",
             "description": payload.get("description"),
-            "thumbnail_url": (payload.get("thumbnails") or [{}])[-1].get("url"),
+            "thumbnail_url": _normalize_yt_thumbnail(
+                (payload.get("thumbnails") or [{}])[-1].get("url"),
+            ),
             "subscriber_count": payload.get("channel_follower_count"),
         }
 

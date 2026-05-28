@@ -14,7 +14,7 @@ from app.api.v1.response.organization_response import (
     OrganizationResponse,
     OrgMembershipResponse,
 )
-from app.common.auth.auth import UserContext, get_user_context, require_role
+from app.common.auth.auth import UserContext, get_user_context_or_default, require_role
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
 from app.service.org_membership_service import OrgMembershipService
@@ -38,7 +38,7 @@ def get_membership_service(db: AsyncSession = Depends(get_db)) -> OrgMembershipS
 )
 async def create_organization(
     body: CreateOrganizationRequest,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: OrganizationService = Depends(get_org_service),
 ):
     """Create a new organization. The caller becomes its owner."""
@@ -53,7 +53,7 @@ async def create_organization(
 async def list_organizations(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: OrganizationService = Depends(get_org_service),
 ):
     """List orgs the current user belongs to."""
@@ -68,7 +68,7 @@ async def list_organizations(
 )
 async def get_organization(
     org_id: str,
-    _ctx: UserContext = Depends(get_user_context),
+    _ctx: UserContext = Depends(get_user_context_or_default),
     service: OrganizationService = Depends(get_org_service),
 ):
     """Get organization details. Requires membership."""
@@ -131,7 +131,7 @@ async def list_members(
     org_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
-    _ctx: UserContext = Depends(get_user_context),
+    _ctx: UserContext = Depends(get_user_context_or_default),
     service: OrgMembershipService = Depends(get_membership_service),
 ):
     """List members of an organization."""

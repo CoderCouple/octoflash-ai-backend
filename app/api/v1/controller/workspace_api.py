@@ -10,7 +10,7 @@ from app.api.v1.request.workspace_request import (
 )
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.workspace_response import WorkspaceResponse
-from app.common.auth.auth import UserContext, get_user_context, require_role
+from app.common.auth.auth import UserContext, get_user_context_or_default, require_role
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
 from app.service.workspace_service import WorkspaceService
@@ -46,7 +46,7 @@ async def create_workspace(
 async def list_workspaces(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: WorkspaceService = Depends(get_workspace_service),
 ):
     """List workspaces in the active organization."""
@@ -65,7 +65,7 @@ async def list_workspaces(
 )
 async def get_workspace(
     workspace_id: str,
-    _ctx: UserContext = Depends(get_user_context),
+    _ctx: UserContext = Depends(get_user_context_or_default),
     service: WorkspaceService = Depends(get_workspace_service),
 ):
     """Get workspace details."""

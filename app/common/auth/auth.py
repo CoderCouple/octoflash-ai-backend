@@ -177,9 +177,15 @@ async def get_user_context_or_default(
 
 
 def require_role(*roles: str):
-    """Dependency factory enforcing role membership in the active org."""
+    """Dependency factory enforcing role membership in the active org.
 
-    async def _check(ctx: UserContext = Depends(get_user_context)) -> UserContext:
+    Goes through `get_user_context_or_default` so that dev (no JWT)
+    sessions are recognized as the default user with role=owner. In
+    production with JWT present the canonical strict path runs
+    underneath — full RBAC + tenancy enforcement is unchanged.
+    """
+
+    async def _check(ctx: UserContext = Depends(get_user_context_or_default)) -> UserContext:
         if ctx.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

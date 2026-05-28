@@ -13,7 +13,7 @@ from app.api.v1.response.billing_response import (
     PortalResponse,
     UsageResponse,
 )
-from app.common.auth.auth import UserContext, get_user_context, require_role
+from app.common.auth.auth import UserContext, get_user_context_or_default, require_role
 from app.db.session import get_db
 from app.service.billing_service import BillingService
 
@@ -76,7 +76,7 @@ async def create_portal(
     "/billing/invoices", response_model=BaseResponse[list[InvoiceResponse]]
 )
 async def list_invoices(
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: BillingService = Depends(get_billing_service),
 ):
     """Recent invoices for the org's Stripe customer."""
@@ -88,7 +88,7 @@ async def list_invoices(
 
 @router.get("/billing/usage", response_model=BaseResponse[UsageResponse])
 async def get_usage(
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: BillingService = Depends(get_billing_service),
 ):
     """Current usage vs plan limits."""
