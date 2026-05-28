@@ -239,12 +239,18 @@ class YouTubeFetcherService:
                 pass
 
         # Pick the highest-quality thumbnail when the listing provides them.
+        # yt-dlp's flat-playlist output for the /shorts tab routinely omits
+        # the thumbnails block entirely, so fall back to YouTube's
+        # deterministic id-based URL — every video on the platform has
+        # /vi/{id}/hqdefault.jpg available without auth.
         thumbs = entry.get("thumbnails") or []
         thumb_url: str | None = None
         if thumbs:
             thumb_url = thumbs[-1].get("url")
         else:
             thumb_url = entry.get("thumbnail")
+        if not thumb_url and video_id:
+            thumb_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
         # Prefer the explicit duration cutoff when yt-dlp gave us one.
         # Fall back to the tab hint — entries from /shorts are
