@@ -18,7 +18,7 @@ from app.api.tags import Tags
 from app.api.v1.request.credential_request import UpsertCredentialRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.credential_response import CredentialResponse
-from app.common.auth.auth import UserContext, get_user_context
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.db.session import get_db
 from app.service.credential_service import CredentialService
 
@@ -31,7 +31,7 @@ def get_credential_service(db: AsyncSession = Depends(get_db)) -> CredentialServ
 
 @router.get("/credentials", response_model=BaseResponse[list[CredentialResponse]])
 async def list_credentials(
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: CredentialService = Depends(get_credential_service),
 ):
     rows = await service.list_for_user(ctx.user_id)
@@ -46,7 +46,7 @@ async def list_credentials(
 async def upsert_credential(
     name: str,
     body: UpsertCredentialRequest,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: CredentialService = Depends(get_credential_service),
 ):
     try:
@@ -61,7 +61,7 @@ async def upsert_credential(
 )
 async def delete_credential(
     name: str,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: CredentialService = Depends(get_credential_service),
 ):
     deleted = await service.delete(ctx.user_id, name)
