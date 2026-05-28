@@ -6,8 +6,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import router as api_router
 from app.api.v1.controller.billing_webhook_api import router as stripe_webhook_router
@@ -67,6 +70,15 @@ app.add_middleware(
 register_exception_handlers(app)
 
 app.include_router(api_router)
+
+# Serve uploaded avatars (and any other user-uploaded local assets) from
+# `{settings.local_storage_path}` under /storage/*. In prod these should
+# move to S3/CloudFront — wire `S3_PUBLIC_BASE_URL` and the upload
+# endpoint will switch over.
+_storage_root = Path(settings.local_storage_path or "storage").resolve()
+(_storage_root / "avatars").mkdir(parents=True, exist_ok=True)
+app.mount("/storage", StaticFiles(directory=str(_storage_root)), name="storage")
+
 # Stripe webhook is mounted at root (no /api/v1 prefix, no JWT auth — the
 # signature header is the credential).
 app.include_router(stripe_webhook_router)

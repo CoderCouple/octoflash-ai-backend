@@ -5,6 +5,9 @@ from app.common.enum.scene import Orientation
 
 class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    # avatar_url is an http URL pointing at the stored asset (S3 in prod,
+    # local /storage/avatars/* in dev). The settings page uploads the
+    # image via POST /me/avatar first, then sends back just this URL.
     avatar_url: str | None = Field(default=None, max_length=2048)
 
 

@@ -1,6 +1,11 @@
 """/me — current user profile + active org/workspace context + preferences."""
 
-from fastapi import APIRouter, Depends
+import logging
+import time
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
@@ -18,6 +23,19 @@ from app.api.v1.response.user_response import (
 from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.db.session import get_db
 from app.service.user_service import UserService
+from app.settings import settings
+
+logger = logging.getLogger(__name__)
+
+# Avatar upload constraints — keep in lockstep with FE settings page.
+_MAX_AVATAR_BYTES = 8 * 1024 * 1024  # 8 MB
+_ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_AVATAR_EXT_BY_TYPE = {
+    "image/jpeg": "jpg",
+    "image/png":  "png",
+    "image/webp": "webp",
+    "image/gif":  "gif",
+}
 
 router = APIRouter(tags=[Tags.Me])
 
@@ -69,6 +87,69 @@ async def update_current_user_profile(
     )
     return success_response(
         await _build_user_response(service, ctx.user_id), "Profile updated"
+    )
+
+
+@router.post("/me/avatar", response_model=BaseResponse[UserResponse])
+async def upload_avatar(
+    request: Request,
+    file: UploadFile,
+    ctx: UserContext = Depends(get_user_context_or_default),
+    service: UserService = Depends(get_user_service),
+):
+    """Upload an avatar image. Returns the updated user with the new
+    avatar_url already set.
+
+    Storage is local disk in dev (`{local_storage_path}/avatars/*`,
+    served at /storage/avatars/*). In prod, when `S3_PUBLIC_BASE_URL`
+    is configured, swap the write target to S3 — the public URL
+    contract is the same.
+
+    The companion PATCH /me endpoint still accepts an `avatar_url`
+    directly, so users who'd rather paste a Gravatar / GitHub URL
+    skip this endpoint entirely.
+    """
+    content_type = (file.content_type or "").lower()
+    if content_type not in _ALLOWED_AVATAR_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Avatar must be one of: {sorted(_ALLOWED_AVATAR_TYPES)}. Got: {content_type!r}",
+        )
+
+    # Read once + size-check. FastAPI streams the upload via SpooledTemporaryFile
+    # so reading the whole thing into memory is fine at the 8 MB cap.
+    data = await file.read()
+    if len(data) > _MAX_AVATAR_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Avatar must be ≤ {_MAX_AVATAR_BYTES // (1024*1024)} MB.",
+        )
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty upload.",
+        )
+
+    ext = _AVATAR_EXT_BY_TYPE[content_type]
+    # New filename per upload so the FE/cdn caches don't serve a stale image.
+    fname = f"{ctx.user_id}-{int(time.time())}-{uuid.uuid4().hex[:8]}.{ext}"
+    storage_root = Path(settings.local_storage_path or "storage").resolve()
+    dest = storage_root / "avatars" / fname
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    logger.info("avatar upload: user=%s path=%s bytes=%d", ctx.user_id, dest, len(data))
+
+    # Build the public URL. In prod with S3_PUBLIC_BASE_URL configured we'd
+    # have uploaded to S3 above and use `{s3_public_base_url}/avatars/{fname}`;
+    # in dev we serve from this same FastAPI host via the /storage mount.
+    if settings.s3_public_base_url:
+        avatar_url = f"{settings.s3_public_base_url.rstrip('/')}/avatars/{fname}"
+    else:
+        avatar_url = str(request.url_for("storage", path=f"avatars/{fname}"))
+
+    await service.update_profile(ctx.user_id, avatar_url=avatar_url)
+    return success_response(
+        await _build_user_response(service, ctx.user_id), "Avatar uploaded"
     )
 
 
