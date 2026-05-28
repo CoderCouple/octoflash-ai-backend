@@ -69,8 +69,8 @@ Rules:
   (inclusive). Plans shorter than 60s are too short for the format;
   longer than 120s are not eligible as a YouTube Short / TikTok / Reel.
 - Recommended scene-count by target duration:
-    60-90s   → 5-8 clips × 8-12s each (PORTRAIT shorts, lower end)
-    90-120s  → 7-10 clips × 10-15s each (PORTRAIT shorts, upper end)
+    60-90s   → 6-8 clips × 8-12s each (PORTRAIT shorts, lower end)
+    90-120s  → 8-10 clips × 10-15s each (PORTRAIT shorts, upper end)
     180-300s → 10-15 clips × 15-25s each (LANDSCAPE long-form)
 - First clip is the HOOK (≤6s) — visual, no narration ramp.
 - **Second-to-last clip MUST be an MCQ** (~8-10s): a multiple-choice question testing the central concept, followed by the answer reveal. Use `make_mcq_card(...)` styling — the script generator knows the helper. Phrase the `prompt` as: "Quick quiz: <question> with 3-4 options. Highlight the correct answer in green; dim the others. Voiceover reads the question, pauses, then narrates the answer."
