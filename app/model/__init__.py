@@ -23,6 +23,7 @@ from app.model.subscription_model import Subscription  # noqa: F401
 from app.model.target_model import Target  # noqa: F401
 from app.model.user_model import User  # noqa: F401
 from app.model.user_preference_model import UserPreference  # noqa: F401
+from app.model.waitlist_model import WaitlistEntry  # noqa: F401
 from app.model.workflow_edge_instance_model import WorkflowEdgeInstance  # noqa: F401
 from app.model.workflow_execution_model import WorkflowExecution  # noqa: F401
 from app.model.workflow_model import Workflow  # noqa: F401

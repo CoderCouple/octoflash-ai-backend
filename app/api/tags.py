@@ -17,3 +17,4 @@ class Tags(str, Enum):
     Voice = "Voice"
     Playground = "Playground"
     Credential = "Credential"
+    Contact = "Contact"

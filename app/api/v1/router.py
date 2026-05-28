@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.controller.billing_api import router as billing_router
+from app.api.v1.controller.contact_api import router as contact_router
 from app.api.v1.controller.credential_api import router as credential_router
 from app.api.v1.controller.executions_api import router as executions_router
 from app.api.v1.controller.export_api import router as export_router
@@ -35,3 +36,4 @@ router.include_router(target_router)
 router.include_router(voice_router)
 router.include_router(playground_router)
 router.include_router(credential_router)
+router.include_router(contact_router)
