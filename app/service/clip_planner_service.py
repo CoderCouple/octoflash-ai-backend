@@ -64,9 +64,13 @@ Rules:
 - Total clip durations must sum within ±10% of the user-requested target.
 - Each `prompt` MUST be SELF-CONTAINED — restate the topic at the start since clips share no state across renders.
 - For each clip's `prompt`, describe what should appear ON SCREEN visually (axes? formula? labeled diagram? MCQ?) and what the voiceover should say. Be specific so downstream script_gen produces tight code.
+- PORTRAIT (Shorts) output is HARD-CONSTRAINED to 60-120 seconds total.
+  Plans for orientation=portrait MUST sum to between 60 and 120 seconds
+  (inclusive). Plans shorter than 60s are too short for the format;
+  longer than 120s are not eligible as a YouTube Short / TikTok / Reel.
 - Recommended scene-count by target duration:
-    ≤60s   → 4-6 clips × 8-12s each (PORTRAIT shorts)
-    90-120s → 6-9 clips × 12-15s each
+    60-90s   → 5-8 clips × 8-12s each (PORTRAIT shorts, lower end)
+    90-120s  → 7-10 clips × 10-15s each (PORTRAIT shorts, upper end)
     180-300s → 10-15 clips × 15-25s each (LANDSCAPE long-form)
 - First clip is the HOOK (≤6s) — visual, no narration ramp.
 - **Second-to-last clip MUST be an MCQ** (~8-10s): a multiple-choice question testing the central concept, followed by the answer reveal. Use `make_mcq_card(...)` styling — the script generator knows the helper. Phrase the `prompt` as: "Quick quiz: <question> with 3-4 options. Highlight the correct answer in green; dim the others. Voiceover reads the question, pauses, then narrates the answer."
@@ -90,7 +94,20 @@ class ClipPlannerService:
 
         `max_clips` is a hard cap to prevent runaway plans. Claude may produce
         fewer clips than max_clips if the content doesn't warrant more.
+
+        Portrait output is clamped to the Shorts-eligible window 60–120s.
+        Sources outside that range (a 30s TikTok, a 4-hour podcast)
+        still produce a valid plan — we just rescale the target.
         """
+        if (orientation or "portrait").lower() == "portrait":
+            clamped = max(60.0, min(target_duration, 120.0))
+            if clamped != target_duration:
+                logger.info(
+                    "ClipPlannerService.plan: clamped portrait target %ss → %ss",
+                    target_duration, clamped,
+                )
+                target_duration = clamped
+
         user_msg = (
             f"## Source brief\n\n"
             f"**Transcript:**\n{transcript}\n\n"
@@ -184,6 +201,24 @@ class ClipPlannerService:
             raise RuntimeError("Clip planner produced no usable clips")
 
         total = sum(c.duration for c in clips)
+
+        # Portrait shorts must land in [60, 120]. If the LLM produced a
+        # plan outside that window, rescale every clip's duration by the
+        # same factor so the total lands inside the band. Proportional
+        # rescaling keeps the model's relative pacing intact (hooks stay
+        # short, complex middles stay long).
+        if (orientation or "portrait").lower() == "portrait" and total > 0:
+            if total < 60.0 or total > 120.0:
+                desired = max(60.0, min(total, 120.0))
+                factor = desired / total
+                for c in clips:
+                    c.duration = round(c.duration * factor, 1)
+                logger.info(
+                    "ClipPlannerService.plan: rescaled %.1fs → %.1fs (×%.2f)",
+                    total, desired, factor,
+                )
+                total = sum(c.duration for c in clips)
+
         logger.info(
             "ClipPlannerService.plan: %d clips, total %.1fs (target %.0fs)",
             len(clips), total, target_duration,
