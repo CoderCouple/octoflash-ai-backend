@@ -121,67 +121,104 @@ class YouTubeFetcherService:
         external_id_or_url: str,
         max_videos: int = 50,
     ) -> list[dict[str, Any]]:
-        """Return up to `max_videos` recent uploads for a channel.
+        """Return up to `max_videos` recent uploads for a channel,
+        spanning both the long-form `/videos` tab AND the `/shorts` tab.
+
+        YouTube serves shorts from a separate tab — `/channel/UC…/videos`
+        alone returns zero shorts even for channels that publish them
+        constantly (Veritasium, MrBeast, etc). Fetch both and merge,
+        deduping by video id.
 
         `external_id_or_url` accepts:
-          * UC… channel id  → resolves to https://www.youtube.com/channel/UC…/videos
+          * UC… channel id   → resolves to /channel/UC…/{videos,shorts}
           * a full channel URL (https://youtube.com/@handle, /c/, /user/, …)
         """
         if external_id_or_url.startswith("UC"):
-            url = f"https://www.youtube.com/channel/{external_id_or_url}/videos"
+            base = f"https://www.youtube.com/channel/{external_id_or_url}"
         else:
-            url = external_id_or_url
-            if "/videos" not in url:
-                url = url.rstrip("/") + "/videos"
+            base = external_id_or_url.rstrip("/")
+            # If the caller already passed a tab-qualified URL, strip the
+            # tab so we can append both tabs cleanly.
+            for tab in ("/videos", "/shorts", "/streams", "/featured"):
+                if base.endswith(tab):
+                    base = base[: -len(tab)]
+                    break
 
-        log.info(
-            "YouTubeFetcherService.fetch_channel_videos: url=%s max=%d",
-            url, max_videos,
-        )
+        tabs = [("/videos", "landscape"), ("/shorts", "short")]
+        videos: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        # Split the budget across tabs so a high `max_videos` doesn't
+        # blow past it after merging. Slight preference toward long-form.
+        per_tab = max(5, max_videos // len(tabs))
 
-        result = subprocess.run(
-            [
-                "yt-dlp",
-                *self._YT_DLP_FLAGS,
-                "--playlist-end", str(max_videos),
-                url,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0 and not result.stdout.strip():
-            # `--ignore-errors` lets per-video failures pass through; only
-            # treat a fully-empty stdout as fatal.
+        for tab_suffix, kind_hint in tabs:
+            url = f"{base}{tab_suffix}"
+            log.info(
+                "YouTubeFetcherService.fetch_channel_videos: url=%s per_tab=%d",
+                url, per_tab,
+            )
+            result = subprocess.run(
+                [
+                    "yt-dlp",
+                    *self._YT_DLP_FLAGS,
+                    "--playlist-end", str(per_tab),
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0 and not result.stdout.strip():
+                # Don't fatal here — a channel without shorts will fail
+                # the /shorts tab and that's expected. Only fatal if
+                # BOTH tabs come back empty (checked after the loop).
+                log.warning(
+                    "yt-dlp tab=%s returned nothing for %s: %s",
+                    tab_suffix, base, result.stderr.strip()[-200:],
+                )
+                continue
+
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    log.warning("yt-dlp emitted non-JSON line: %s", line[:120])
+                    continue
+                normalized = self._normalize_video_entry(entry, kind_hint=kind_hint)
+                vid = normalized.get("external_id")
+                if not vid or vid in seen_ids:
+                    continue
+                seen_ids.add(vid)
+                videos.append(normalized)
+
+        if not videos:
             raise RuntimeError(
-                f"yt-dlp returned no videos for {url}: "
-                f"{result.stderr.strip()[-500:]}"
+                f"yt-dlp returned no videos for {base} across /videos + /shorts tabs"
             )
 
-        videos: list[dict[str, Any]] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                log.warning("yt-dlp emitted non-JSON line: %s", line[:120])
-                continue
-
-            videos.append(self._normalize_video_entry(entry))
-
         log.info(
-            "YouTubeFetcherService.fetch_channel_videos: parsed %d videos",
+            "YouTubeFetcherService.fetch_channel_videos: parsed %d videos (%d shorts)",
             len(videos),
+            sum(1 for v in videos if v.get("kind") == "short"),
         )
         return videos
 
     # ── helpers ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _normalize_video_entry(entry: dict[str, Any]) -> dict[str, Any]:
-        """Map a yt-dlp flat-playlist JSON line to our SourceVideo shape."""
+    def _normalize_video_entry(
+        entry: dict[str, Any], *, kind_hint: str | None = None,
+    ) -> dict[str, Any]:
+        """Map a yt-dlp flat-playlist JSON line to our SourceVideo shape.
+
+        `kind_hint` is the tab the entry came from ("short" / "landscape").
+        We use it as a tiebreaker when yt-dlp's flat-playlist output omits
+        `duration` (which is often does for shorts) — without it, every
+        short would default to "landscape".
+        """
         video_id = entry.get("id") or entry.get("video_id") or ""
         duration = entry.get("duration")
         try:
@@ -209,7 +246,13 @@ class YouTubeFetcherService:
         else:
             thumb_url = entry.get("thumbnail")
 
-        kind = "short" if duration_s is not None and duration_s <= 75 else "landscape"
+        # Prefer the explicit duration cutoff when yt-dlp gave us one.
+        # Fall back to the tab hint — entries from /shorts are
+        # canonically shorts even when duration is missing.
+        if duration_s is not None:
+            kind = "short" if duration_s <= 75 else "landscape"
+        else:
+            kind = kind_hint or "landscape"
 
         return {
             "external_id":     video_id,
