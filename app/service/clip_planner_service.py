@@ -29,6 +29,18 @@ from app.llm import CallKind, ask
 logger = logging.getLogger(__name__)
 
 
+def _coerce_duration(raw: object, fallback: float) -> float:
+    """Models sometimes emit durations as `"10s"` or `"~12 seconds"`.
+    Strip non-numeric chars and parse; fall back if nothing usable."""
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        m = re.search(r"-?\d+(?:\.\d+)?", raw)
+        if m:
+            return float(m.group(0))
+    return fallback
+
+
 @dataclass
 class PlannedClip:
     n: int  # 1-indexed position in the final video
@@ -96,21 +108,27 @@ class ClipPlannerService:
             "transcript_chars=%d",
             target_duration, orientation, max_clips, len(transcript),
         )
+        # `/no_think` is a Qwen3 directive that suppresses the <think>...</think>
+        # reasoning block. Anthropic ignores it. Cheap to include unconditionally.
         result = await ask(
             kind=CallKind.CLIP_PLANNER,
             system=[{
                 "type": "text",
-                "text": _SYSTEM,
+                "text": _SYSTEM + "\n\n/no_think",
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=4096,
+            response_format={"type": "json_object"},
         )
         logger.info(
             "ClipPlannerService.plan: provider=%s model=%s fell_back=%s",
             result.provider_used, result.model_used, result.fell_back,
         )
         raw = result.text.strip()
+        # Strip <think>...</think> blocks emitted by reasoning models when
+        # /no_think didn't take effect.
+        raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL)
         # Strip accidental code fences
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)
@@ -119,9 +137,17 @@ class ClipPlannerService:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            logger.error("ClipPlannerService.plan: bad JSON: %s\nraw=%s", e, raw[:500])
+            logger.error("ClipPlannerService.plan: bad JSON: %s\nraw=%s", e, raw[:1500])
             raise RuntimeError(f"Clip planner returned invalid JSON: {e}") from e
 
+        # Tolerant unwrap: small models often wrap the array in
+        # `{"clips": [...]}` or similar. Walk one level of dict-of-lists and
+        # pick the first list-of-dicts.
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    data = v
+                    break
         if not isinstance(data, list):
             raise RuntimeError(f"Clip planner returned non-list: {type(data).__name__}")
 
@@ -130,12 +156,26 @@ class ClipPlannerService:
             if not isinstance(item, dict):
                 logger.warning("ClipPlannerService.plan: skipping non-dict entry %d", i)
                 continue
+            # Accept either our spec (`n`/`title`/`prompt`/`duration`) or the
+            # `shot_number`/`scene_description` shape some models default to.
             try:
                 clips.append(PlannedClip(
-                    n=int(item.get("n", i + 1)),
-                    title=str(item.get("title", f"Clip {i + 1}")),
-                    prompt=str(item.get("prompt", "")),
-                    duration=float(item.get("duration", target_duration / max(1, len(data)))),
+                    n=int(item.get("n") or item.get("shot_number") or (i + 1)),
+                    title=str(
+                        item.get("title")
+                        or item.get("name")
+                        or f"Clip {i + 1}"
+                    ),
+                    prompt=str(
+                        item.get("prompt")
+                        or item.get("scene_description")
+                        or item.get("description")
+                        or ""
+                    ),
+                    duration=_coerce_duration(
+                        item.get("duration"),
+                        fallback=target_duration / max(1, len(data)),
+                    ),
                 ))
             except (ValueError, TypeError) as e:
                 logger.warning("ClipPlannerService.plan: skipping malformed entry %d: %s", i, e)

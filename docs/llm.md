@@ -24,7 +24,7 @@ Non-retriable errors (auth, malformed request) propagate as-is.
 
 ```bash
 brew install ollama && brew services start ollama
-ollama pull qwen3:14b       # text  — planner / script_gen / stream helper
+ollama pull qwen3:8b       # text  — planner / script_gen / stream helper
 ollama pull qwen3-vl:8b     # vision — synthesize / evaluate / analyze_source
 ```
 
@@ -32,7 +32,7 @@ Then in `.env.local`:
 
 ```
 OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_TEXT_MODEL=qwen3:14b
+OLLAMA_TEXT_MODEL=qwen3:8b
 OLLAMA_VISION_MODEL=qwen3-vl:8b
 LLM_FALLBACK_ENABLED=true
 ```
@@ -48,7 +48,7 @@ for that kind.
 
 ```
 ROUTING_SCRIPT_GEN_PRIMARY=anthropic/claude-opus-4-7
-ROUTING_SCRIPT_GEN_FALLBACK=ollama_chat/qwen3:14b
+ROUTING_SCRIPT_GEN_FALLBACK=ollama_chat/qwen3:8b
 ```
 
 The six kinds: `CLIP_PLANNER`, `SCRIPT_GEN`, `SYNTHESIZE`,

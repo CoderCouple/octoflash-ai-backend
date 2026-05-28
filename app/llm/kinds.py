@@ -29,11 +29,15 @@ class CallKind(str, Enum):
 # to settings.ollama_vision_model when the local primary is Ollama, and to
 # the same hosted model regardless when the primary is anthropic
 # (Claude's text/vision are the same model).
+#
+# SCRIPT_GEN is here because generate_episode_script attaches up to 6
+# source frames as vision input when a Project has a source video.
 _VISION_KINDS: frozenset[CallKind] = frozenset(
     {
         CallKind.SYNTHESIZE,
         CallKind.EVALUATE,
         CallKind.ANALYZE_SOURCE,
+        CallKind.SCRIPT_GEN,
     }
 )
 
