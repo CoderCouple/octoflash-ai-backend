@@ -18,7 +18,7 @@ from app.api.v1.response.source_response import (
     SourceResponse,
     SourceVideoResponse,
 )
-from app.common.enum.source import SourcePlatform, SourceVideoKind
+from app.common.enum.source import SourcePlatform, SourceVideoKind, detect_platform
 from app.common.exceptions import EntityNotFoundError
 from app.db.repository.source_repository import SourceRepository
 from app.db.repository.source_video_repository import SourceVideoRepository
@@ -67,9 +67,21 @@ class SourceService:
         owner = user_id or settings.default_user_id
         source_url = str(body.source_url)
 
+        # Auto-detect platform from URL host. Client may override.
+        platform = body.platform or detect_platform(source_url)
+        if platform is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Couldn't detect a supported platform from {source_url!r}. "
+                    "Supported: youtube, instagram, tiktok, x, linkedin. "
+                    "Pass `platform` explicitly if your URL uses a non-standard host."
+                ),
+            )
+
         # Resolve channel metadata server-side. yt-dlp is blocking → to_thread.
         fetched: dict = {}
-        if body.platform == SourcePlatform.YOUTUBE:
+        if platform == SourcePlatform.YOUTUBE:
             try:
                 fetched = await asyncio.to_thread(
                     get_youtube_fetcher().fetch_channel_metadata, source_url,
@@ -78,7 +90,7 @@ class SourceService:
                 log.warning("SourceService.create: fetcher failed for %s: %s", source_url, e)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Could not resolve {body.platform.value} URL: {e}",
+                    detail=f"Could not resolve {platform.value} URL: {e}",
                 ) from e
         else:
             # IG / TikTok / etc — no fetcher wired yet. Require the client
@@ -88,7 +100,7 @@ class SourceService:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
-                        f"{body.platform.value} fetcher not yet wired — "
+                        f"{platform.value} fetcher not yet wired — "
                         "pass `name` explicitly until OAuth-backed ingest lands."
                     ),
                 )
@@ -102,7 +114,7 @@ class SourceService:
         # refreshes the row instead of creating a duplicate.
         if external_id:
             existing = await self.source_repo.get_by_platform_external_id(
-                owner, body.platform.value, external_id,
+                owner, platform.value, external_id,
             )
             if existing is not None:
                 existing.source_url = source_url
@@ -130,7 +142,7 @@ class SourceService:
 
         source = Source(
             user_id=owner,
-            platform=body.platform,
+            platform=platform,
             source_url=source_url,
             external_id=external_id,
             handle=body.handle or fetched.get("handle"),

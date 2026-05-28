@@ -15,7 +15,9 @@ class CreateSourceRequest(BaseModel):
     """
 
     source_url: HttpUrl
-    platform: SourcePlatform = SourcePlatform.YOUTUBE
+    # Auto-detected from the URL when not supplied. Pass explicitly to
+    # override (e.g. for cross-platform mirrors or test fixtures).
+    platform: SourcePlatform | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
     external_id: str | None = Field(default=None, max_length=128)
     handle: str | None = Field(default=None, max_length=128)
