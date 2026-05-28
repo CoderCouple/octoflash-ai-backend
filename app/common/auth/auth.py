@@ -127,6 +127,55 @@ async def get_user_context(
     )
 
 
+async def get_user_context_or_default(
+    claims: dict[str, Any] | None = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
+    x_org_id: str | None = Header(default=None, alias="X-Org-Id"),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
+) -> UserContext:
+    """Like `get_user_context` but falls back to `settings.default_user_id`
+    when no JWT is present. Used by /me routes so the FE can update the
+    profile in local dev without a Cognito session — the user row already
+    exists; we just need to bootstrap a default org / workspace on first
+    request.
+
+    Production behaviour is unchanged: when a JWT IS present we route
+    through the canonical `get_user_context` flow (RBAC + tenancy
+    enforced exactly the same way).
+    """
+    from app.common.auth.cognito import get_current_user as _get_current_user  # noqa: F401
+    from app.service.user_service import UserService
+
+    if claims is not None:
+        # JWT present — delegate to the strict path.
+        return await get_user_context(
+            claims=claims, db=db, x_org_id=x_org_id, x_workspace_id=x_workspace_id,
+        )
+
+    # No JWT → dev fallback against the well-known default user.
+    from app.settings import settings
+
+    user_service = UserService(db)
+    user = await user_service.ensure_default_tenancy(settings.default_user_id)
+
+    org_id = x_org_id or user.default_org_id
+    workspace_id = x_workspace_id or user.default_workspace_id
+    if not org_id or not workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Default user is missing org/workspace after bootstrap",
+        )
+
+    return UserContext(
+        actor_id=user.cognito_sub or user.id,
+        user_id=user.id,
+        email=user.email,
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        role="owner",  # dev fallback is always owner of its personal org
+    )
+
+
 def require_role(*roles: str):
     """Dependency factory enforcing role membership in the active org."""
 

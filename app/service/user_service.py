@@ -118,6 +118,56 @@ class UserService:
     async def get_user(self, user_id: str) -> User | None:
         return await self.user_repo.get_by_id(user_id)
 
+    async def ensure_default_tenancy(self, user_id: str) -> User:
+        """Make sure `user_id` has a default org + workspace + owner
+        membership. Used by the dev fallback path on /me when no Cognito
+        JWT is present — the canonical dev user (`settings.default_user_id`)
+        exists in the DB but may not have been auto-provisioned a tenancy
+        the way a Cognito-backed user is.
+
+        Idempotent: returns the user as-is if it already has both
+        `default_org_id` and `default_workspace_id`.
+        """
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise EntityNotFoundError("User", user_id)
+        if user.default_org_id and user.default_workspace_id:
+            return user
+
+        logger.info(
+            "ensure_default_tenancy: bootstrapping org/workspace for user=%s", user.id,
+        )
+        org = Organization(
+            name="Personal",
+            slug=_slugify(f"personal-{user.id[-8:]}"),
+            plan="free",
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        org = await self.org_repo.create(org)
+
+        membership = OrgMembership(
+            org_id=org.id,
+            user_id=user.id,
+            role=OrgRole.OWNER.value,
+            status=MembershipStatus.ACTIVE.value,
+        )
+        await self.membership_repo.create(membership)
+
+        workspace = Workspace(
+            org_id=org.id,
+            name="Default",
+            slug="default",
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        workspace = await self.workspace_repo.create(workspace)
+
+        user.default_org_id = org.id
+        user.default_workspace_id = workspace.id
+        user = await self.user_repo.update(user)
+        return user
+
     async def update_profile(
         self,
         user_id: str,

@@ -15,7 +15,7 @@ from app.api.v1.response.user_response import (
     UserPreferences,
     UserResponse,
 )
-from app.common.auth.auth import UserContext, get_user_context
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.db.session import get_db
 from app.service.user_service import UserService
 
@@ -39,7 +39,7 @@ async def _build_user_response(
 
 @router.get("/me", response_model=BaseResponse[UserContextResponse])
 async def get_current_user_profile(
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: UserService = Depends(get_user_service),
 ):
     """Return the current user with active org / workspace / role context.
@@ -60,7 +60,7 @@ async def get_current_user_profile(
 @router.patch("/me", response_model=BaseResponse[UserResponse])
 async def update_current_user_profile(
     body: UpdateProfileRequest,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: UserService = Depends(get_user_service),
 ):
     """Update display name and/or avatar. Preferences have their own route."""
@@ -75,7 +75,7 @@ async def update_current_user_profile(
 @router.put("/me/context", response_model=BaseResponse[UserResponse])
 async def switch_context(
     body: SwitchContextRequest,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: UserService = Depends(get_user_service),
 ):
     """Switch the active organization and/or workspace."""
@@ -93,7 +93,7 @@ async def switch_context(
 )
 async def update_preferences(
     body: UpdatePreferencesRequest,
-    ctx: UserContext = Depends(get_user_context),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: UserService = Depends(get_user_service),
 ):
     """Sparse partial update of the user's preferences blob.
