@@ -200,6 +200,14 @@ class ProjectService:
         user_id: str | None = None,
         org_id: str | None = None,
         workspace_id: str | None = None,
+        *,
+        orientation: object | None = None,   # Orientation enum or string
+        quality: object | None = None,       # Quality enum or string
+        voiceover: bool | None = None,
+        voice_id: str | None = None,
+        voice_gender: str | None = None,
+        voice_accent: str | None = None,
+        target_duration: float | None = None,
     ) -> CreateProjectFromSourceResponse:
         """Create a Project and kick off the AnalyzeProjectWorkflow on Temporal.
 
@@ -216,14 +224,24 @@ class ProjectService:
         except UnsupportedSourceError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-        # 1. Project shell
-        project = Project(
+        # 1. Project shell. User-chosen render options are stamped here
+        # so the first Generate doesn't need a follow-up PATCH; everything
+        # is still editable via PATCH /projects/{id} later.
+        project_kwargs: dict = dict(
             title=title or f"From {source_type.value}",
             source_url=source_url,
             user_id=user_id or settings.default_user_id,
             org_id=org_id,
             workspace_id=workspace_id,
         )
+        if orientation is not None:       project_kwargs["orientation"] = orientation
+        if quality is not None:           project_kwargs["quality"] = quality
+        if voiceover is not None:         project_kwargs["voiceover"] = voiceover
+        if voice_id is not None:          project_kwargs["voice_id"] = voice_id
+        if voice_gender is not None:      project_kwargs["voice_gender"] = voice_gender
+        if voice_accent is not None:      project_kwargs["voice_accent"] = voice_accent
+        if target_duration is not None:   project_kwargs["target_duration"] = target_duration
+        project = Project(**project_kwargs)
         project = await self.project_repo.create(project)
         project_resp = ProjectResponse.model_validate(project)
 

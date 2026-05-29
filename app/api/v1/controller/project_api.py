@@ -96,6 +96,13 @@ async def create_project_from_source(
     result = await service.create_from_source(
         source_url=str(body.source_url),
         title=body.title,
+        orientation=body.orientation,
+        quality=body.quality,
+        voiceover=body.voiceover,
+        voice_id=body.voice_id,
+        voice_gender=body.voice_gender,
+        voice_accent=body.voice_accent,
+        target_duration=body.target_duration,
     )
     return success_response(result, "Analyze workflow started", 202)
 
