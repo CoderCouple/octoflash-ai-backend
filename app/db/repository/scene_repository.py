@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.enum.scene import Orientation
@@ -38,6 +38,27 @@ class SceneRepository:
             )
         )
         return result.scalar() or 1
+
+    async def delete_for_project_orientation(
+        self, project_id: str, orientation: Orientation | str
+    ) -> int:
+        """Bulk-delete every scene scoped to (project_id, orientation).
+
+        Called from `create_scenes_activity` to make Generate idempotent:
+        if the user clicks Retry after a partial run, the existing draft
+        rows still occupy `n=1..N` and collide with the new plan via the
+        `uq_scene_project_orientation_n` unique constraint. Wipe them
+        first; the workflow then re-creates a fresh set from the latest
+        clip plan.
+        """
+        result = await self.db.execute(
+            delete(Scene).where(
+                Scene.project_id == project_id,
+                Scene.orientation == orientation,
+            )
+        )
+        await self.db.flush()
+        return result.rowcount or 0
 
     async def create(self, scene: Scene) -> Scene:
         self.db.add(scene)

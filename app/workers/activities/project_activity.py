@@ -262,10 +262,26 @@ async def bind_scenes_to_dag_activity(
 
 @activity.defn(name="create_scenes")
 async def create_scenes_activity(payload: CreateScenesInput) -> CreateScenesOutput:
-    """Persist N planned clips as Scene rows. Returns the assigned scene_ids."""
+    """Persist N planned clips as Scene rows. Returns the assigned scene_ids.
+
+    Idempotent on retry: if scenes for (project_id, orientation) already
+    exist (a prior partial run got far enough to insert drafts), wipe
+    them before inserting fresh. Without this, the second click of
+    Generate trips `uq_scene_project_orientation_n` and the whole
+    workflow fails — which is the most common 'why did my retry fail?'
+    bug we see.
+    """
     factory = _session_factory()
     async with factory() as session:
         scene_repo = SceneRepository(session)
+        wiped = await scene_repo.delete_for_project_orientation(
+            payload.project_id, payload.orientation,
+        )
+        if wiped:
+            activity.logger.info(
+                "create_scenes: wiped %d stale scene(s) for project=%s orientation=%s",
+                wiped, payload.project_id, payload.orientation,
+            )
         created: list[CreatedScene] = []
         for spec in payload.clips:
             # Normalize: Temporal serializes dataclasses to dict round-trip
