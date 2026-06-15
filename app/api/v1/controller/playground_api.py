@@ -24,11 +24,25 @@ from app.service.playground_service import (
     PlaygroundService,
     PlaygroundValidationError,
 )
+from app.settings import settings
 
 router = APIRouter(tags=[Tags.Playground])
 
+# Friendly response when PLAYGROUND_ENABLED=false. Surfaced for every
+# /playground/* endpoint so the FE can detect it on either presets-load
+# or render-submit and hide / disable the UI accordingly.
+_DISABLED_DETAIL = (
+    "Playground is not available on this deployment. "
+    "It requires a sandboxed Manim runtime that isn't configured here."
+)
+
 
 def get_playground_service() -> PlaygroundService:
+    if not settings.playground_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_DISABLED_DETAIL,
+        )
     return PlaygroundService()
 
 

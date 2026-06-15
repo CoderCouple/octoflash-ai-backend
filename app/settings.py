@@ -149,6 +149,13 @@ class Settings(BaseSettings):
     #
     # Never set `playground_sandbox_mode=local` on a deployment exposed to
     # the public internet.
+    # Master switch — defaults on. Set PLAYGROUND_ENABLED=false in
+    # environments that can't host a sandbox (e.g. Railway, which doesn't
+    # support docker-in-docker). When false, all /playground/* endpoints
+    # return 503 with a clean "feature not available on this deployment"
+    # message, and the FE can hide the page entirely via GET /playground/presets
+    # also 503-ing.
+    playground_enabled: bool = True
     playground_sandbox_mode: str = "docker"
     playground_docker_bin: str = "docker"
     # ManimGL (3Blue1Brown) — image built from infra/playground-runner/Dockerfile

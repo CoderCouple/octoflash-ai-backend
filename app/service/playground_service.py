@@ -315,8 +315,17 @@ def _find_video(job_dir: Path) -> Path | None:
 def _check_docker_available() -> None:
     bin_path = shutil.which(settings.playground_docker_bin)
     if not bin_path:
+        # Most users won't know what to do with "docker binary not on PATH".
+        # Phrase this as a deploy-level statement; operators see the
+        # original detail in the logged exception in the controller.
+        logger.warning(
+            "playground: docker binary %r not on PATH — endpoint returning 503",
+            settings.playground_docker_bin,
+        )
         raise PlaygroundRuntimeUnavailable(
-            f"docker binary '{settings.playground_docker_bin}' not on PATH"
+            "Playground sandbox isn't available on this deployment. "
+            "(The Manim runner runs inside a container and the host "
+            "doesn't expose a Docker daemon.)"
         )
     try:
         proc = subprocess.run(
