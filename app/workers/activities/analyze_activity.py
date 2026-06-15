@@ -48,7 +48,17 @@ class AnalyzeSourceOutput:
 
 
 def _download_video(url: str, project_id: str) -> Path:
-    """yt-dlp the source video into storage/projects/<project_id>/source.<ext>."""
+    """yt-dlp the source video into storage/projects/<project_id>/source.<ext>.
+
+    YouTube aggressively blocks data-center IPs (Railway, Render, etc.)
+    as scrapers, so the `web` extractor frequently 403s. The `android`
+    + `ios` player clients use a different cert path that's been more
+    reliable in practice.
+
+    Captures stderr explicitly so any yt-dlp failure surfaces as a real
+    error message (the previous `--quiet` swallowed everything,
+    making Temporal show only `returned non-zero exit status 1`).
+    """
     storage_root = Path(settings.local_storage_path or "storage").resolve()
     target_dir = storage_root / "projects" / project_id
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -56,13 +66,28 @@ def _download_video(url: str, project_id: str) -> Path:
     outtmpl = str(target_dir / "source.%(ext)s")
     cmd = [
         "yt-dlp",
-        "--quiet", "--no-warnings", "--no-playlist",
+        "--no-playlist",
+        "--no-warnings",
+        # Anti-bot workarounds for data-center IPs:
+        "--extractor-args", "youtube:player_client=android,ios,web",
+        "--geo-bypass",
         "-f", "best[height<=720]/best",
         "-o", outtmpl,
         url,
     ]
     activity.logger.info("yt-dlp: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True, timeout=300)
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=300, check=False,
+    )
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or "")[-1500:]
+        activity.logger.error(
+            "yt-dlp FAILED (rc=%d) for url=%s\n--- stderr tail ---\n%s",
+            proc.returncode, url, stderr_tail,
+        )
+        raise RuntimeError(
+            f"yt-dlp failed (rc={proc.returncode}). Last stderr: {stderr_tail[-400:]}"
+        )
 
     found = next(target_dir.glob("source.*"), None)
     if not found:
