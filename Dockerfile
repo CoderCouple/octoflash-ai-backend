@@ -20,6 +20,16 @@ WORKDIR /app
 #                                          sox -> render fails at voice step in the subprocess.
 #   pkg-config                          -> manimpango's setup.py uses pkg-config to discover
 #                                          pangocairo headers + version
+#   texlive-latex-base + extras + dvisvgm → Manim MathTex / Tex render.
+#                                          Without these, any scene with
+#                                          mathematical formulas dies with
+#                                          "latex failed but did not produce
+#                                          a log file." The four packages
+#                                          below cover the standard Manim
+#                                          tutorial set (AMS math, mathtools,
+#                                          xcolor, etc.). Adds ~700 MB to
+#                                          the image — worth it; without it
+#                                          ~80 % of educational clips fail.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc build-essential libpq-dev curl ffmpeg \
     libcairo2 libcairo2-dev \
@@ -28,6 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     sox \
     pkg-config \
+    texlive-latex-base \
+    texlive-fonts-recommended \
+    texlive-latex-recommended \
+    texlive-latex-extra \
+    texlive-science \
+    dvisvgm \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --upgrade pip \
