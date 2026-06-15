@@ -537,8 +537,14 @@ def _render_scene_sync(
             except Exception:  # noqa: BLE001
                 pass
 
-        t_out = _threading.Thread(target=_drain, args=(proc.stdout, "stdout", stdout_lines))
-        t_err = _threading.Thread(target=_drain, args=(proc.stderr, "stderr", stderr_lines))
+        # `log_level_enum` only accepts DEBUG/INFO/WARN/ERROR. Map
+        # stream-of-origin to a level: stdout=INFO (general progress),
+        # stderr=ERROR (Manim writes errors + warnings + progress bars
+        # to stderr — we lose level granularity but at least the rows
+        # land. The FE can still distinguish source by inspecting the
+        # message itself).
+        t_out = _threading.Thread(target=_drain, args=(proc.stdout, "INFO", stdout_lines))
+        t_err = _threading.Thread(target=_drain, args=(proc.stderr, "ERROR", stderr_lines))
         t_out.start(); t_err.start()
         try:
             returncode = proc.wait(timeout=1800)
