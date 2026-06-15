@@ -7,8 +7,20 @@ from app.settings import settings
 
 @lru_cache(maxsize=1)
 def get_async_engine():
-    """Create and cache a singleton async SQLAlchemy engine."""
-    connect_args = {"ssl": "require"} if settings.db_ssl_require else {}
+    """Create and cache a singleton async SQLAlchemy engine.
+
+    Behind Supabase's transaction pooler (port 6543) asyncpg's prepared-
+    statement cache must be off — PgBouncer reuses the same backend
+    connection across transactions, so prepared-statement names collide.
+    `statement_cache_size=0` disables asyncpg's own cache;
+    `prepared_statement_cache_size=0` disables SQLAlchemy's wrapper cache.
+    """
+    connect_args: dict[str, object] = {}
+    if settings.db_ssl_require:
+        connect_args["ssl"] = "require"
+    if settings.db_is_pgbouncer_txn:
+        connect_args["statement_cache_size"] = 0
+        connect_args["prepared_statement_cache_size"] = 0
     return create_async_engine(
         settings.async_database_url,
         echo=settings.db_echo,

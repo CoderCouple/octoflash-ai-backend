@@ -53,22 +53,22 @@ controller (api/v1/controller)
 
 All endpoints return `BaseResponse[T]` — `{ result, status_code, message, success }`. Wrap successful responses via `success_response(...)`; error envelopes are auto-applied by `register_exception_handlers` for any raised `HTTPException` (including the custom ones in `app/common/exceptions.py`).
 
-### Auth + tenancy (Cognito → UserContext → Org / Workspace)
+### Auth + tenancy (Supabase → UserContext → Org / Workspace)
 
-Auth is **not** a set of endpoints — it's a JWT-verification dependency layered on every protected route. Sign-up / sign-in / password-reset / MFA all live in AWS Cognito Hosted UI; the frontend handles the OAuth dance and sends the resulting ID token as `Authorization: Bearer <JWT>`.
+Auth is **not** a set of endpoints — it's a JWT-verification dependency layered on every protected route. Sign-up / sign-in / password-reset / MFA all live in Supabase Auth on the frontend (`@supabase/supabase-js`); the FE sends the resulting access token as `Authorization: Bearer <JWT>`.
 
 Request shape:
 ```
-Authorization: Bearer <Cognito JWT>
+Authorization: Bearer <Supabase JWT>
 X-Org-Id:        <org_…>   (optional — defaults to user.default_org_id)
 X-Workspace-Id:  <ws_…>    (optional — defaults to user.default_workspace_id)
 ```
 
 Flow (per request):
 1. `HTTPBearer` extracts the token.
-2. `decode_cognito_token()` (`app/common/auth/cognito.py`) — RS256 verify against cached JWKS (1h TTL, auto-refresh on `kid` miss), check `exp` / `iss` / `aud`.
+2. `decode_supabase_token()` (`app/common/auth/supabase.py`) — HS256 verify with `SUPABASE_JWT_SECRET`, check `exp` / `iss=<SUPABASE_URL>/auth/v1` / `aud=authenticated`.
 3. `get_user_context()` (`app/common/auth/auth.py`):
-   - `UserService.get_or_create_user(sub, email)` — auto-provisions a `User` row, a "Personal" `Organization`, an owner `OrgMembership`, a "Default" `Workspace`, and (when Stripe is configured) a Stripe customer + free-tier `Subscription` on first sign-in.
+   - `UserService.get_or_create_user(auth_sub, email)` — auto-provisions a `User` row (keyed by `auth_sub` — the Supabase `auth.users.id` UUID), a "Personal" `Organization`, an owner `OrgMembership`, a "Default" `Workspace`, and (when Stripe is configured) a Stripe customer + free-tier `Subscription` on first sign-in.
    - Resolves active org (`X-Org-Id` header or `user.default_org_id`) and verifies an active membership exists.
    - Resolves active workspace (`X-Workspace-Id` header or `user.default_workspace_id`) and verifies it belongs to the active org.
    - Returns `UserContext { actor_id, user_id, email, organization_id, workspace_id, role }`.
@@ -78,13 +78,13 @@ Tenancy model:
 
 | Entity        | Prefix      | Role                                                                                       |
 | ------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| User          | `user_*`    | Cognito-backed identity. `cognito_sub` is the unique key; auto-provisioned on first JWT.   |
+| User          | `user_*`    | Supabase-backed identity. `auth_sub` (= Supabase `auth.users.id`) is the unique key; auto-provisioned on first JWT. |
 | Organization  | `org_*`     | Billing boundary. Holds a Stripe customer via the `Subscription` row.                      |
 | OrgMembership | `om_*`      | `(user_id, org_id, role)`. Role ∈ `owner` / `admin` / `member`. `user_id` is NULL for pending email invites until that user signs up. |
 | Workspace     | `ws_*`      | Top-level grouping inside an Org. The per-request tenancy unit. Slugs unique per org.      |
 | Project       | `prj_*`     | A video project (existing entity). Carries `org_id` + `workspace_id` (nullable while the legacy routes are migrated). |
 
-No backend endpoints exist for login / signup / reset — those live in Cognito Hosted UI.
+No backend endpoints exist for login / signup / reset — those live in Supabase Auth (frontend).
 
 ### Domain — projects, scenes, sources, targets, workflows, executions
 
@@ -177,7 +177,7 @@ Plan tiers (`app/common/billing/plan_limits.py`): `free` / `pro` / `enterprise`.
 
 ### Settings
 
-`app/settings.py` (pydantic-settings) auto-loads `.env.local` on macOS, `.env.dev` elsewhere. Exposes `async_database_url` (SQLAlchemy + asyncpg), `asyncpg_dsn` (workers / bulk), `sync_database_url` (Alembic), `cognito_jwks_url` + `cognito_issuer` (derived from `cognito_user_pool_id` + `cognito_region`). Cognito + Stripe env vars: `COGNITO_USER_POOL_ID`, `COGNITO_REGION`, `COGNITO_APP_CLIENT_ID`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_PRO`, `STRIPE_PRICE_ID_ENTERPRISE`. See `.env.example` for the full surface.
+`app/settings.py` (pydantic-settings) auto-loads `.env.local` on macOS, `.env.dev` elsewhere. Exposes `async_database_url` (SQLAlchemy + asyncpg — points at the Supabase transaction pooler when `DATABASE_URL` is set), `asyncpg_dsn` (workers / bulk), `sync_database_url` (Alembic — uses `DATABASE_URL_DIRECT` if set so DDL bypasses PgBouncer), `supabase_issuer` (derived from `SUPABASE_URL`). Auth + Stripe env vars: `SUPABASE_URL`, `SUPABASE_JWT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_PRO`, `STRIPE_PRICE_ID_ENTERPRISE`. See `.env.example` for the full surface.
 
 ### Out-of-MVP — do not build
 
@@ -215,8 +215,8 @@ app/
 │       ├── request/              Pydantic input schemas
 │       └── response/             Pydantic output schemas + base_response envelope
 ├── common/
-│   ├── auth/                     Cognito + UserContext + require_role
-│   │   ├── cognito.py            JWT decode + JWKS cache
+│   ├── auth/                     Supabase JWT + UserContext + require_role
+│   │   ├── supabase.py           JWT decode (HS256 + project JWT secret)
 │   │   └── auth.py               UserContext, get_user_context, require_role
 │   ├── billing/                  Stripe client + plan limits + enforcement
 │   │   ├── stripe_client.py

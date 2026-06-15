@@ -27,7 +27,7 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    cognito_sub: str
+    auth_sub: str
     email: str | None = None
     display_name: str | None = None
     avatar_url: str | None = None

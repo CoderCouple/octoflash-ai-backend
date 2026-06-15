@@ -1,6 +1,7 @@
 import platform
 from urllib.parse import quote
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,16 @@ def _detect_env_file() -> str:
     fall through to the process environment.
     """
     return ".env.local" if platform.system() == "Darwin" else ".env.dev"
+
+
+# Push .env into os.environ before Settings() is constructed. Pydantic-
+# settings reads the file too, but only assigns to Settings fields — it
+# does NOT propagate to os.environ. The LLM router reads its per-kind
+# overrides (ROUTING_<KIND>_PRIMARY / _FALLBACK) via os.environ.get
+# because the keys are dynamic, so without this load they're invisible
+# at runtime. `override=False` means a real process env var (CI / ECS
+# task def / docker -e) wins over the file, matching pydantic's order.
+load_dotenv(_detect_env_file(), override=False)
 
 
 class Settings(BaseSettings):
@@ -36,7 +47,21 @@ class Settings(BaseSettings):
     port: int = 8008
 
     # Database
+    #
+    # Two URLs because Supabase (and any PgBouncer-fronted Postgres) gives
+    # you a pooled endpoint on port 6543 for runtime traffic and a direct
+    # 5432 endpoint for Alembic. PgBouncer in transaction mode doesn't
+    # support session-level state (prepared statements, SET LOCAL, etc),
+    # so the runtime URL must point at 6543 with asyncpg statement cache
+    # disabled (see app/db/engine.py) while migrations go direct on 5432.
+    #
+    #   DATABASE_URL=postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres
+    #   DATABASE_URL_DIRECT=postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres
+    #
+    # For local docker-compose Postgres both can stay unset — the
+    # POSTGRES_* fields below build localhost URLs from scratch.
     database_url: str | None = None
+    database_url_direct: str | None = None
     postgres_user: str = "octoflash"
     postgres_password: str = "octoflash"
     postgres_db: str = "octoflash_db"
@@ -80,11 +105,21 @@ class Settings(BaseSettings):
     # the request layer. Mirrors the seed row in sql/schema/0001_octoflash_schema.sql.
     default_user_id: str = "user_00000000-0000-0000-0000-000000000001"
 
-    # AWS Cognito — JWT verification only. Signup/login/MFA all happen in the
-    # Hosted UI; the backend just validates the resulting Bearer token.
-    cognito_user_pool_id: str = ""
-    cognito_region: str = "us-west-2"
-    cognito_app_client_id: str = ""
+    # Supabase Auth — JWT verification only. Signup/login/MFA all happen in
+    # the frontend via @supabase/supabase-js; the backend just validates the
+    # resulting Bearer token. Two values needed:
+    #
+    #   SUPABASE_URL          https://<ref>.supabase.co — used to derive the
+    #                         issuer claim we accept (`<url>/auth/v1`).
+    #   SUPABASE_JWT_SECRET   HS256 shared secret from
+    #                         Supabase dashboard → Project Settings → API →
+    #                         JWT Settings → JWT Secret. Do NOT confuse with
+    #                         the anon or service-role keys.
+    #
+    # Audience is always `authenticated` for end-user tokens (Supabase
+    # fixes this; not configurable).
+    supabase_url: str = ""
+    supabase_jwt_secret: str = ""
 
     # Stripe — billing. All Stripe interactions are no-ops while
     # `stripe_secret_key` is empty (dev / test stays uncoupled). Webhook
@@ -128,18 +163,13 @@ class Settings(BaseSettings):
         return bool(self.temporal_api_key)
 
     @property
-    def cognito_jwks_url(self) -> str:
-        return (
-            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/"
-            f"{self.cognito_user_pool_id}/.well-known/jwks.json"
-        )
-
-    @property
-    def cognito_issuer(self) -> str:
-        return (
-            f"https://cognito-idp.{self.cognito_region}.amazonaws.com/"
-            f"{self.cognito_user_pool_id}"
-        )
+    def supabase_issuer(self) -> str:
+        """Supabase signs tokens with `iss=<SUPABASE_URL>/auth/v1`. The
+        decoder checks this exactly — leaving SUPABASE_URL unset means
+        the property returns the empty `/auth/v1` literal, which won't
+        match any real token (auth simply refuses 401 in that case).
+        """
+        return f"{self.supabase_url.rstrip('/')}/auth/v1"
 
     # Anthropic (script generator + describer + evaluator)
     anthropic_api_key: str = ""
@@ -307,8 +337,14 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        if self.database_url:
-            url = self.database_url.replace("postgresql://", "postgresql+psycopg://")
+        # Alembic + sync queries always use the direct (non-pooler) URL
+        # when one is provided — PgBouncer transaction-mode breaks DDL +
+        # any session-level state migrations need.
+        raw = self.database_url_direct or self.database_url
+        if raw:
+            url = raw.replace("postgresql+asyncpg://", "postgresql://").replace(
+                "postgresql://", "postgresql+psycopg://"
+            )
         else:
             url = (
                 f"postgresql+psycopg://{self.postgres_user}:{self._quoted_password}"
@@ -318,6 +354,16 @@ class Settings(BaseSettings):
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}sslmode=require"
         return url
+
+    @property
+    def db_is_pgbouncer_txn(self) -> bool:
+        """True when `database_url` looks like a PgBouncer transaction-mode
+        endpoint — currently a Supabase pooler URL on port 6543. Used by
+        the engine factory to disable asyncpg's prepared-statement cache
+        (PgBouncer rejects `PARSE` / `BIND` reuse in transaction mode)."""
+        if not self.database_url:
+            return False
+        return ":6543" in self.database_url or "pooler.supabase.com" in self.database_url
 
 
 settings = Settings()

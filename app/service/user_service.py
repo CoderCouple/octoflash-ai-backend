@@ -47,25 +47,25 @@ class UserService:
         self.billing_service = BillingService(db)
 
     async def get_or_create_user(
-        self, cognito_sub: str, email: str | None = None
+        self, auth_sub: str, email: str | None = None
     ) -> User:
-        """Look up user by cognito_sub; auto-provision on first sign-in."""
-        user = await self.user_repo.get_by_cognito_sub(cognito_sub)
+        """Look up user by auth_sub; auto-provision on first sign-in."""
+        user = await self.user_repo.get_by_auth_sub(auth_sub)
         if user:
             user.last_login_at = datetime.now(timezone.utc)
             await self.user_repo.update(user)
             return user
 
-        return await self._auto_provision(cognito_sub, email)
+        return await self._auto_provision(auth_sub, email)
 
-    async def _auto_provision(self, cognito_sub: str, email: str | None) -> User:
+    async def _auto_provision(self, auth_sub: str, email: str | None) -> User:
         """Create user + personal org + owner membership + default workspace."""
         logger.info(
-            "Auto-provisioning user for sub=%s email=%s", cognito_sub, email
+            "Auto-provisioning user for sub=%s email=%s", auth_sub, email
         )
 
         user = User(
-            cognito_sub=cognito_sub,
+            auth_sub=auth_sub,
             email=email,
             display_name=email.split("@")[0] if email else None,
             last_login_at=datetime.now(timezone.utc),
@@ -120,10 +120,10 @@ class UserService:
 
     async def ensure_default_tenancy(self, user_id: str) -> User:
         """Make sure `user_id` has a default org + workspace + owner
-        membership. Used by the dev fallback path on /me when no Cognito
-        JWT is present — the canonical dev user (`settings.default_user_id`)
-        exists in the DB but may not have been auto-provisioned a tenancy
-        the way a Cognito-backed user is.
+        membership. Used by the dev fallback path on /me when no JWT is
+        present — the canonical dev user (`settings.default_user_id`)
+        exists in the DB but may not have been auto-provisioned a
+        tenancy the way an auth-backed user is.
 
         Idempotent: returns the user as-is if it already has both
         `default_org_id` and `default_workspace_id`.

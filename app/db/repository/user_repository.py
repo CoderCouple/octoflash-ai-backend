@@ -12,8 +12,8 @@ class UserRepository:
         result = await self.db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
-    async def get_by_cognito_sub(self, sub: str) -> User | None:
-        result = await self.db.execute(select(User).where(User.cognito_sub == sub))
+    async def get_by_auth_sub(self, sub: str) -> User | None:
+        result = await self.db.execute(select(User).where(User.auth_sub == sub))
         return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:

@@ -9,8 +9,10 @@
 --     `organization` is the billing boundary; `subscription` is 1:1 with org.
 --     `workspace` groups projects inside an org and is the per-request
 --     tenancy unit (X-Workspace-Id header).
---   * Auth: Cognito-backed. `user.cognito_sub` is the upstream identity;
---     signup/login/MFA live in Cognito Hosted UI, not in this backend.
+--   * Auth: Supabase-backed. `user.auth_sub` is the upstream identity
+--     (auth.users.id UUID); signup/login/MFA live in Supabase Auth on
+--     the frontend, not in this backend. Column name is provider-
+--     neutral so future swaps don't require a migration.
 --   * Audit: created_by / updated_by are nullable FK → "user"(id).
 --   * Soft delete: is_deleted on owning entities (not membership / sub / billing_event).
 --   * JSON: JSONB throughout.
@@ -68,12 +70,12 @@ CREATE TYPE execution_phase_status_enum AS ENUM (
 CREATE TYPE log_level_enum AS ENUM ('DEBUG', 'INFO', 'WARN', 'ERROR');
 
 -- ============================================================================
--- IDENTITY (Cognito-backed)
+-- IDENTITY (Supabase Auth-backed)
 -- ============================================================================
 
 CREATE TABLE "user" (
   id                    TEXT PRIMARY KEY DEFAULT ('user_' || gen_random_uuid()) NOT NULL,
-  cognito_sub           TEXT         UNIQUE NOT NULL,
+  auth_sub              TEXT         UNIQUE NOT NULL,
   email                 VARCHAR(320),
   display_name          VARCHAR(255),
   avatar_url            VARCHAR(2048),
@@ -83,8 +85,8 @@ CREATE TABLE "user" (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX ix_user_cognito_sub ON "user"(cognito_sub);
-CREATE INDEX ix_user_email       ON "user"(email);
+CREATE INDEX ix_user_auth_sub ON "user"(auth_sub);
+CREATE INDEX ix_user_email    ON "user"(email);
 
 -- Per-user settings, satellite table. JSONB blob means new preferences are
 -- a Pydantic-model edit only — no DB migration. user_id is PK (strict 1:1).
@@ -521,12 +523,12 @@ CREATE INDEX idx_log_phase_timestamp ON execution_log(execution_phase_id, "times
 -- SEED — default user (placeholder until existing routes are migrated to auth)
 -- ----------------------------------------------------------------------------
 -- Every owned row needs a user_id FK. New routes (auth/tenancy/billing) use
--- Cognito-resolved UserContext; legacy routes still fall back to this
--- well-known id (mirrored in settings.default_user_id). `cognito_sub='default'`
--- is unreachable from real Cognito tokens.
+-- UserContext resolved from a Supabase JWT; legacy routes still fall back to
+-- this well-known id (mirrored in settings.default_user_id). `auth_sub='default'`
+-- is unreachable from any real auth provider's tokens.
 -- ============================================================================
 
-INSERT INTO "user" (id, cognito_sub, email, display_name) VALUES
+INSERT INTO "user" (id, auth_sub, email, display_name) VALUES
   (
     'user_00000000-0000-0000-0000-000000000001',
     'default',

@@ -904,10 +904,11 @@ async def generate_episode_script(
         clip_info += f"\n## IMPROVEMENT FEEDBACK (from previous iteration)\n{feedback}\n"
     content.append({"type": "text", "text": clip_info})
 
-    # Landscape (long-form) needs much more room — up to ~40 scenes of code.
-    # Opus 4.7 supports 64K output tokens natively. We were hitting truncation at 32K.
-    # Portrait was 8192 but real responses cross that — give it 24K for headroom.
-    max_out_tokens = 24000 if is_portrait else 64000
+    # Landscape (long-form) needs more room — up to ~40 scenes of code.
+    # Real landscape responses top out around 38–42K; 48K is safe headroom
+    # without paying for unused output ceiling. Portrait stays at 24K
+    # (real responses cluster around 16K, 24K covers the long tail).
+    max_out_tokens = 24000 if is_portrait else 48000
 
     async def _one_attempt(validator_feedback: str | None) -> str:
         """One Claude call → sanitize → return code. Raises if extraction fails.
@@ -1146,13 +1147,15 @@ async def analyze_source_frames(
     # connection refused → fallback to hosted; if both fail the except
     # below catches it).
 
-    # Sample ~8 frames evenly
+    # Sample 6 frames evenly — 6 is enough to capture style (color
+    # palette, typography, layout pattern); the 7th/8th rarely add new
+    # information and cost a vision-input token charge per frame.
     full_paths = [STORAGE_DIR / f for f in frame_paths]
     existing = [p for p in full_paths if p.exists()]
     if not existing:
         return _basic_description(transcript, frame_paths, duration)
 
-    sampled = _sample_items(existing, 8)
+    sampled = _sample_items(existing, 6)
     content = []
 
     for frame_path in sampled:

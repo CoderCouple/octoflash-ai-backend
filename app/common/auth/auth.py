@@ -18,14 +18,14 @@ from fastapi import Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.auth.cognito import get_current_user, get_current_user_optional
+from app.common.auth.supabase import get_current_user, get_current_user_optional
 from app.db.session import get_db
 
 logger = logging.getLogger(__name__)
 
 
 class UserContext(BaseModel):
-    actor_id: str  # Cognito sub
+    actor_id: str  # Supabase auth.users.id (JWT `sub` claim)
     user_id: str  # Internal user_ id
     email: str | None = None
     organization_id: str  # Active org
@@ -36,7 +36,7 @@ class UserContext(BaseModel):
 async def get_actor_id(
     claims: dict[str, Any] | None = Depends(get_current_user_optional),
 ) -> str | None:
-    """Return the Cognito sub from a valid JWT, or None if no token."""
+    """Return the auth `sub` from a valid JWT, or None if no token."""
     if claims is None:
         return None
     return claims.get("sub")
@@ -52,7 +52,7 @@ async def get_actor_id_required(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing sub claim",
         )
-    return sub
+    return sub  # type: ignore[no-any-return]
 
 
 async def get_user_context(
@@ -135,15 +135,14 @@ async def get_user_context_or_default(
 ) -> UserContext:
     """Like `get_user_context` but falls back to `settings.default_user_id`
     when no JWT is present. Used by /me routes so the FE can update the
-    profile in local dev without a Cognito session — the user row already
-    exists; we just need to bootstrap a default org / workspace on first
-    request.
+    profile in local dev without a Supabase session — the user row
+    already exists; we just need to bootstrap a default org / workspace
+    on first request.
 
     Production behaviour is unchanged: when a JWT IS present we route
     through the canonical `get_user_context` flow (RBAC + tenancy
     enforced exactly the same way).
     """
-    from app.common.auth.cognito import get_current_user as _get_current_user  # noqa: F401
     from app.service.user_service import UserService
 
     if claims is not None:
@@ -167,7 +166,7 @@ async def get_user_context_or_default(
         )
 
     return UserContext(
-        actor_id=user.cognito_sub or user.id,
+        actor_id=user.auth_sub or user.id,
         user_id=user.id,
         email=user.email,
         organization_id=org_id,
