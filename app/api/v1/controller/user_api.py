@@ -3,9 +3,8 @@
 import logging
 import time
 import uuid
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
@@ -22,8 +21,11 @@ from app.api.v1.response.user_response import (
 )
 from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.db.session import get_db
+from app.service.supabase_storage_service import (
+    BUCKET_AVATARS,
+    get_storage_service,
+)
 from app.service.user_service import UserService
-from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +49,27 @@ def get_user_service(db: AsyncSession = Depends(get_db)) -> UserService:
 async def _build_user_response(
     service: UserService, user_id: str
 ) -> UserResponse:
-    """Load the User row + preferences and combine into the wire shape."""
+    """Load the User row + preferences and combine into the wire shape.
+
+    Translates `avatar_url` from the stored `supabase://<bucket>/<path>`
+    sentinel into a fresh signed URL on the way out — never persists a
+    time-limited URL on the DB row.
+    """
     user = await service.get_user(user_id)
     prefs = await service.get_preferences(user_id)
     response = UserResponse.model_validate(user)
     response.preferences = prefs
+    if response.avatar_url and response.avatar_url.startswith("supabase://"):
+        rest = response.avatar_url[len("supabase://"):]
+        bucket, _, object_path = rest.partition("/")
+        try:
+            response.avatar_url = get_storage_service().signed_url(bucket, object_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "avatar signed_url failed for user=%s ref=%s: %s",
+                user_id, response.avatar_url, exc,
+            )
+            response.avatar_url = None
     return response
 
 
@@ -92,7 +110,6 @@ async def update_current_user_profile(
 
 @router.post("/me/avatar", response_model=BaseResponse[UserResponse])
 async def upload_avatar(
-    request: Request,
     file: UploadFile,
     ctx: UserContext = Depends(get_user_context_or_default),
     service: UserService = Depends(get_user_service),
@@ -100,14 +117,10 @@ async def upload_avatar(
     """Upload an avatar image. Returns the updated user with the new
     avatar_url already set.
 
-    Storage is local disk in dev (`{local_storage_path}/avatars/*`,
-    served at /storage/avatars/*). In prod, when `S3_PUBLIC_BASE_URL`
-    is configured, swap the write target to S3 — the public URL
-    contract is the same.
-
-    The companion PATCH /me endpoint still accepts an `avatar_url`
-    directly, so users who'd rather paste a Gravatar / GitHub URL
-    skip this endpoint entirely.
+    Storage is Supabase Storage (`avatars` bucket, private + signed
+    URLs, 1h TTL). The companion PATCH /me endpoint still accepts an
+    `avatar_url` directly, so users who'd rather paste a Gravatar /
+    GitHub URL skip this endpoint entirely.
     """
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_AVATAR_TYPES:
@@ -130,24 +143,33 @@ async def upload_avatar(
             detail="Empty upload.",
         )
 
+    # Path is per-user so successive uploads overwrite via upsert=true.
+    # Filename includes a timestamp + uuid suffix so the CDN treats each
+    # version as a new resource (signed URLs already bust caches but it
+    # belt-and-suspenders against any prefetch race).
     ext = _AVATAR_EXT_BY_TYPE[content_type]
-    # New filename per upload so the FE/cdn caches don't serve a stale image.
-    fname = f"{ctx.user_id}-{int(time.time())}-{uuid.uuid4().hex[:8]}.{ext}"
-    storage_root = Path(settings.local_storage_path or "storage").resolve()
-    dest = storage_root / "avatars" / fname
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
-    logger.info("avatar upload: user=%s path=%s bytes=%d", ctx.user_id, dest, len(data))
+    path = f"{ctx.user_id}/{int(time.time())}-{uuid.uuid4().hex[:8]}.{ext}"
 
-    # Build the public URL. In prod with S3_PUBLIC_BASE_URL configured we'd
-    # have uploaded to S3 above and use `{s3_public_base_url}/avatars/{fname}`;
-    # in dev we serve from this same FastAPI host via the /storage mount.
-    if settings.s3_public_base_url:
-        avatar_url = f"{settings.s3_public_base_url.rstrip('/')}/avatars/{fname}"
-    else:
-        avatar_url = str(request.url_for("storage", path=f"avatars/{fname}"))
+    try:
+        storage = get_storage_service()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
-    await service.update_profile(ctx.user_id, avatar_url=avatar_url)
+    result = storage.upload_bytes(
+        bucket=BUCKET_AVATARS, path=path, data=data, content_type=content_type,
+    )
+    logger.info(
+        "avatar upload: user=%s bucket=%s path=%s bytes=%d",
+        ctx.user_id, result.bucket, result.path, len(data),
+    )
+
+    # Persist a stable virtual reference instead of the time-limited
+    # signed URL — `_build_user_response` re-signs on the way out.
+    stored_ref = f"supabase://{result.bucket}/{result.path}"
+    await service.update_profile(ctx.user_id, avatar_url=stored_ref)
     return success_response(
         await _build_user_response(service, ctx.user_id), "Avatar uploaded"
     )

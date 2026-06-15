@@ -157,14 +157,17 @@ class ProjectService:
                     project_dir, e,
                 )
 
-    async def get_final_video_path(
+    async def get_final_video_ref(
         self, project_id: str, orientation: str = "portrait"
-    ) -> Path:
-        """Return the on-disk path of the stitched final MP4 for streaming.
+    ) -> str:
+        """Return the raw `final_<orientation>_video_url` value.
 
-        `orientation` selects which final URL to use — `final_portrait_video_url`
-        or `final_landscape_video_url`. 404 if the requested orientation hasn't
-        been generated.
+        Modern records: `supabase://<bucket>/<path>` — the controller
+        re-signs these on each call (signed URLs are time-limited so we
+        never persist them).
+        Legacy: an absolute path on disk — the controller streams those
+        directly via FileResponse. The disambiguation happens at the
+        controller boundary, not here.
         """
         from fastapi import HTTPException, status
 
@@ -172,12 +175,12 @@ class ProjectService:
         if not project:
             raise EntityNotFoundError("Project", project_id)
 
-        url = (
+        ref = (
             project.final_landscape_video_url
             if orientation == "landscape"
             else project.final_portrait_video_url
         )
-        if not url:
+        if not ref:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
@@ -185,13 +188,7 @@ class ProjectService:
                     f"(status={project.status})"
                 ),
             )
-        path = Path(url)
-        if not path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_410_GONE,
-                detail=f"final video url points at missing file: {path}",
-            )
-        return path
+        return ref
 
     async def create_from_source(
         self,

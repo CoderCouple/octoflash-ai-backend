@@ -1,8 +1,12 @@
 """Project API controller."""
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.service.supabase_storage_service import get_storage_service
 
 from app.api.tags import Tags
 from app.api.v1.request.from_source_request import CreateProjectFromSourceRequest
@@ -142,9 +146,37 @@ async def preview_final_video(
     ),
     service: ProjectService = Depends(get_project_service),
 ):
-    """Stream the project's final stitched MP4 for the chosen orientation.
-    404 if that orientation hasn't been generated yet."""
-    path = await service.get_final_video_path(project_id, orientation=orientation)
+    """Hand the FE a playable URL for the project's final MP4.
+
+    For renders that landed in Supabase Storage (the prod path — every
+    new generation since the storage migration) we mint a fresh signed
+    URL on demand and 302 the client to it. For legacy local-disk
+    records (older dev runs only) we still stream the file directly so
+    nothing already in the dev DB breaks.
+    """
+    ref = await service.get_final_video_ref(project_id, orientation=orientation)
+
+    if ref.startswith("supabase://"):
+        # Format: supabase://<bucket>/<path>. Re-sign every call so the
+        # URL is fresh; signed URLs expire after 1h so we don't ever
+        # persist them.
+        rest = ref[len("supabase://"):]
+        bucket, _, object_path = rest.partition("/")
+        if not bucket or not object_path:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Malformed storage reference: {ref}",
+            )
+        signed = get_storage_service().signed_url(bucket, object_path)
+        return RedirectResponse(signed, status_code=status.HTTP_302_FOUND)
+
+    # Legacy: local path on disk (older dev renders pre-Supabase swap).
+    path = Path(ref)
+    if not path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"final video reference points at missing file: {path}",
+        )
     return FileResponse(
         path,
         media_type="video/mp4",

@@ -40,6 +40,7 @@ stripe = "^11.0.0"
 litellm = "^1.55.0"
 python-multipart = "^0.0.29"
 email-validator = "^2.3.0"
+supabase = ">=2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
@@ -57,6 +58,7 @@ greenlet = "^3.4.0"
 # local (non-Docker) mode. Kept in its own optional group so day-to-day
 # `poetry install` stays small — opt in with `make install-playground` or
 # `poetry install --with playground`.
+playwright = "^1.60.0"
 [tool.poetry.group.playground]
 optional = true
 

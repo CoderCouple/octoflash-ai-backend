@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # (ES256 / RS256) and the verifier fetches the public JWKS. Audience
     # is always `authenticated` for end-user tokens.
     supabase_url: str = ""
+    # Service-role / secret key — used by the backend to write to
+    # Supabase Storage (avatars + final renders). Format is `sb_secret_*`
+    # for newer projects, or a long `eyJ…` JWT on legacy projects. Empty
+    # disables storage uploads — requests to /me/avatar 503 cleanly.
+    # NEVER ship this to the browser; it bypasses RLS.
+    supabase_service_role_key: str = ""
 
     # Stripe — billing. All Stripe interactions are no-ops while
     # `stripe_secret_key` is empty (dev / test stays uncoupled). Webhook
