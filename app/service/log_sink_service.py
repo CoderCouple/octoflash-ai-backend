@@ -121,12 +121,42 @@ class LogSink:
                 """,
                 rows,
             )
-        except Exception:  # noqa: BLE001
-            # Don't propagate — logging shouldn't crash the render.
-            logger.exception(
-                "LogSink flush failed for scene_render=%s (%d rows lost)",
-                self.scene_render_id, len(rows),
+            # Print a single-line confirmation so the worker log shows
+            # the streaming is actually working — saves a debugging
+            # round-trip the next time the FE shows empty.
+            logger.info(
+                "LogSink flushed sr=%s rows=%d sample=%r",
+                self.scene_render_id, len(rows), rows[0][3][:80] if rows else "",
             )
+        except Exception as exc:  # noqa: BLE001
+            # Don't propagate — logging shouldn't crash the render.
+            # But make the failure loud — when the FE shows zero log
+            # lines we want a single grep-able log line to know whether
+            # the flush ran or was never reached.
+            logger.error(
+                "LogSink FLUSH FAILED sr=%s rows=%d err=%s: %s",
+                self.scene_render_id, len(rows), type(exc).__name__, str(exc)[:200],
+            )
+            # Try to reopen the connection on next flush — silent
+            # failures here are the worst kind. The next flush will
+            # retry the conn.
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                import psycopg
+                from app.settings import settings
+                self._conn = psycopg.connect(
+                    settings.sync_database_url.replace(
+                        "postgresql+psycopg://", "postgresql://"
+                    ),
+                    autocommit=True,
+                    connect_timeout=10,
+                )
+            except Exception:  # noqa: BLE001
+                # If reconnect also fails, just give up gracefully.
+                logger.exception("LogSink reconnect failed sr=%s", self.scene_render_id)
 
     # ── lifecycle ────────────────────────────────────────────────────
 

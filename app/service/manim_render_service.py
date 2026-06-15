@@ -500,12 +500,22 @@ def _render_scene_sync(
         # line into the LogSink (which batches + INSERTs into
         # execution_log every ~500ms). Local copies still accumulate
         # so `_classify_error` + the final error log keep working.
+        #
+        # `stdbuf -oL -eL` forces the *subprocess* itself to line-buffer
+        # its stdout + stderr. Without it, Python (Manim) detects its
+        # stdout is a pipe (not a tty) and switches to block-buffering,
+        # so individual lines don't reach the parent until the buffer
+        # fills (4 KB+) or the subprocess exits. `bufsize=1` on Popen
+        # only controls the parent-side buffering; it doesn't reach
+        # into the child. Wrapping in stdbuf is the standard fix.
+        # stdbuf is from coreutils — present on every debian-slim image.
+        streaming_cmd = ["stdbuf", "-oL", "-eL", *cmd]
         proc = subprocess.Popen(
-            cmd,
+            streaming_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,  # line-buffered
+            bufsize=1,  # parent-side line buffering
             cwd=str(STORAGE_DIR.parent),
             env=_build_env(voice_id=voice_id),
         )
@@ -666,6 +676,13 @@ def _build_env(voice_id: str = "") -> dict:
     project_root = str(Path(__file__).resolve().parents[2])
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{project_root}:{existing}" if existing else project_root
+
+    # Force unbuffered output from Manim (a Python program) so our
+    # streaming LogSink + Popen reader threads see lines as they're
+    # printed instead of waiting for a flush. Dockerfile already sets
+    # this for the worker process; setting it again on the subprocess
+    # env is belt-and-suspenders against an env not being inherited.
+    env["PYTHONUNBUFFERED"] = "1"
 
     if voice_id:
         env["OCTOFLASH_VOICE_ID"] = voice_id
