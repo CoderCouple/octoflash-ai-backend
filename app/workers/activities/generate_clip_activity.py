@@ -170,11 +170,20 @@ async def generate_clip_activity(payload: GenerateClipInput) -> GenerateClipOutp
             cached_video_path=cached_video_path,
             log_sink=sink,
         )
-    except Exception as exc:  # noqa: BLE001
+    except BaseException as exc:
+        # NB: BaseException (not Exception) so asyncio.CancelledError +
+        # Temporal's start_to_close timeout fire `_finish_scene_render`
+        # too — otherwise the row sits as RUNNING forever when the
+        # activity is killed externally.
         if scene_render_id:
             _finish_scene_render(
-                scene_render_id, status=SceneRenderStatus.FAILED,
-                error_message=str(exc)[:1000],
+                scene_render_id,
+                status=(
+                    SceneRenderStatus.TIMED_OUT
+                    if isinstance(exc, (TimeoutError, __import__("asyncio").CancelledError))
+                    else SceneRenderStatus.FAILED
+                ),
+                error_message=(str(exc) or type(exc).__name__)[:1000],
             )
         if sink is not None:
             sink.close()
