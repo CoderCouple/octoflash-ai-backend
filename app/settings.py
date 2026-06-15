@@ -156,6 +156,15 @@ class Settings(BaseSettings):
     # message, and the FE can hide the page entirely via GET /playground/presets
     # also 503-ing.
     playground_enabled: bool = True
+    # Where the sandbox runs:
+    #   `docker` — the existing host-Docker model (DEV laptops, Fly, any
+    #              host that exposes the Docker daemon)
+    #   `local`  — `manimgl` runs directly on the host (DEV ONLY, no
+    #              isolation — never in prod)
+    #   `modal`  — Modal.com runs the render inside their container per
+    #              call. Adds MODAL_TOKEN_ID / MODAL_TOKEN_SECRET as env
+    #              vars on this service (the modal SDK picks them up).
+    #              Free-tier covers ~30k small renders.
     playground_sandbox_mode: str = "docker"
     playground_docker_bin: str = "docker"
     # ManimGL (3Blue1Brown) — image built from infra/playground-runner/Dockerfile

@@ -395,21 +395,47 @@ class PlaygroundService:
         media_dir.mkdir(parents=True, exist_ok=True)
 
         mode = settings.playground_sandbox_mode.lower()
+        logger.info(
+            "playground render: id=%s class=%s q=%s mode=%s",
+            render_id, scene_class, quality, mode,
+        )
+        t0 = time.time()
+
+        if mode == "modal":
+            # Modal mode does the whole render in a remote container —
+            # bypasses the cmd-builder + local subprocess path entirely.
+            try:
+                from app.service.playground_modal import render_via_modal
+
+                mp4_bytes = await asyncio.to_thread(
+                    render_via_modal, code, scene_class, quality,
+                )
+            except RuntimeError as exc:
+                # Surface manimgl failures + Modal infra errors uniformly.
+                raise PlaygroundRenderError(str(exc)) from exc
+            video = job_dir / "media" / f"{scene_class}.mp4"
+            video.write_bytes(mp4_bytes)
+            took_ms = int((time.time() - t0) * 1000)
+            return PlaygroundRenderResult(
+                render_id=render_id,
+                video_url=f"/api/v1/playground/renders/{render_id}/output",
+                scene_class=scene_class,
+                quality=quality,
+                took_ms=took_ms,
+                log_lines=[],  # Modal stdout isn't surfaced here yet
+                sandbox_mode=mode,
+            )
+
         if mode == "docker":
             cmd = self._build_docker_cmd(job_dir, scene_class, quality_args)
         elif mode == "local":
             cmd = self._build_local_cmd(job_dir, scene_class, quality_args)
         else:
             raise PlaygroundValidationError(
-                f"unknown playground_sandbox_mode {mode!r}; expected 'docker' or 'local'"
+                f"unknown playground_sandbox_mode {mode!r}; expected one of "
+                f"'docker' | 'local' | 'modal'"
             )
 
-        logger.info(
-            "playground render: id=%s class=%s q=%s mode=%s",
-            render_id, scene_class, quality, mode,
-        )
-
-        t0 = time.time()
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,
