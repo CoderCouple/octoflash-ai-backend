@@ -579,7 +579,11 @@ def _render_scene_sync(
         "scene_file": str(scene_file),
         "video_file": str(video_file) if video_file else None,
         "media_dir": str(media_dir),
-        "stderr": result.stderr,
+        # `stderr_text` is unified across both the legacy bulk-capture
+        # and the streaming Popen paths — the latter joins line-by-line
+        # captures into the same string shape callers used to read off
+        # subprocess.CompletedProcess.stderr.
+        "stderr": stderr_text,
     }
 
 
