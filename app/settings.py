@@ -107,19 +107,16 @@ class Settings(BaseSettings):
 
     # Supabase Auth — JWT verification only. Signup/login/MFA all happen in
     # the frontend via @supabase/supabase-js; the backend just validates the
-    # resulting Bearer token. Two values needed:
+    # resulting Bearer token against the project's JWKS endpoint at
+    # `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`.
     #
-    #   SUPABASE_URL          https://<ref>.supabase.co — used to derive the
-    #                         issuer claim we accept (`<url>/auth/v1`).
-    #   SUPABASE_JWT_SECRET   HS256 shared secret from
-    #                         Supabase dashboard → Project Settings → API →
-    #                         JWT Settings → JWT Secret. Do NOT confuse with
-    #                         the anon or service-role keys.
+    #   SUPABASE_URL   https://<ref>.supabase.co — derives both the JWKS
+    #                  URL and the issuer claim we accept (`<url>/auth/v1`).
     #
-    # Audience is always `authenticated` for end-user tokens (Supabase
-    # fixes this; not configurable).
+    # No shared secret needed — Supabase signs tokens with asymmetric keys
+    # (ES256 / RS256) and the verifier fetches the public JWKS. Audience
+    # is always `authenticated` for end-user tokens.
     supabase_url: str = ""
-    supabase_jwt_secret: str = ""
 
     # Stripe — billing. All Stripe interactions are no-ops while
     # `stripe_secret_key` is empty (dev / test stays uncoupled). Webhook
@@ -358,12 +355,13 @@ class Settings(BaseSettings):
     @property
     def db_is_pgbouncer_txn(self) -> bool:
         """True when `database_url` looks like a PgBouncer transaction-mode
-        endpoint — currently a Supabase pooler URL on port 6543. Used by
-        the engine factory to disable asyncpg's prepared-statement cache
-        (PgBouncer rejects `PARSE` / `BIND` reuse in transaction mode)."""
+        endpoint — Supabase's pooler on port 6543. Session pooler (5432)
+        keeps sessions and preserves prepared statements, so it does NOT
+        trigger this and does NOT need cache-disabling. Used by the
+        engine factory to disable asyncpg's prepared-statement cache."""
         if not self.database_url:
             return False
-        return ":6543" in self.database_url or "pooler.supabase.com" in self.database_url
+        return ":6543" in self.database_url
 
 
 settings = Settings()

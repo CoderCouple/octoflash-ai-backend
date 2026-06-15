@@ -23,11 +23,36 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.alter_column("user", "cognito_sub", new_column_name="auth_sub")
-    # Rename the supporting index too so it stays self-describing.
-    op.execute("ALTER INDEX IF EXISTS ix_user_cognito_sub RENAME TO ix_user_auth_sub")
+    # Idempotent. Pre-rename dev DBs still have `cognito_sub`, but a fresh
+    # install (e.g. brand-new Supabase project) runs the updated seed SQL
+    # which already creates the column as `auth_sub`. Check the catalog so
+    # this migration is a no-op in the second case.
+    op.execute(
+        """
+        DO $$ BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='user' AND column_name='cognito_sub'
+          ) THEN
+            ALTER TABLE "user" RENAME COLUMN cognito_sub TO auth_sub;
+            ALTER INDEX IF EXISTS ix_user_cognito_sub RENAME TO ix_user_auth_sub;
+          END IF;
+        END $$;
+        """
+    )
 
 
 def downgrade() -> None:
-    op.execute("ALTER INDEX IF EXISTS ix_user_auth_sub RENAME TO ix_user_cognito_sub")
-    op.alter_column("user", "auth_sub", new_column_name="cognito_sub")
+    op.execute(
+        """
+        DO $$ BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='user' AND column_name='auth_sub'
+          ) THEN
+            ALTER INDEX IF EXISTS ix_user_auth_sub RENAME TO ix_user_cognito_sub;
+            ALTER TABLE "user" RENAME COLUMN auth_sub TO cognito_sub;
+          END IF;
+        END $$;
+        """
+    )
