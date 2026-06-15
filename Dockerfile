@@ -15,6 +15,9 @@ WORKDIR /app
 #   libpangocairo-1.0-0                 -> Pango Cairo runtime
 #   libfreetype6                        -> font rendering
 #   libsndfile1                         -> Whisper audio I/O
+#   sox                                 -> manim-voiceover post-processes generated speech
+#                                          via SoX (audio normalize / clip silence). Missing
+#                                          sox -> render fails at voice step in the subprocess.
 #   pkg-config                          -> manimpango's setup.py uses pkg-config to discover
 #                                          pangocairo headers + version
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 \
     libfreetype6 \
     libsndfile1 \
+    sox \
     pkg-config \
  && rm -rf /var/lib/apt/lists/*
 

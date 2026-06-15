@@ -589,7 +589,13 @@ def _build_env(voice_id: str = "") -> dict:
     if settings.eleven_api_key and "ELEVEN_API_KEY" not in env:
         env["ELEVEN_API_KEY"] = settings.eleven_api_key
 
-    project_root = str(STORAGE_DIR.parent)
+    # Project root = the directory containing the `app/` package. Derive
+    # it from this file's location rather than STORAGE_DIR.parent, which
+    # is misleading on Railway (storage is at /storage, so .parent is /,
+    # but our code lives at /app/app/ — PYTHONPATH=/ wouldn't help).
+    # __file__ = .../app/service/manim_render_service.py; parents[2] is
+    # the dir holding `app/`.
+    project_root = str(Path(__file__).resolve().parents[2])
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{project_root}:{existing}" if existing else project_root
 
