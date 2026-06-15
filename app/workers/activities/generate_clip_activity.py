@@ -16,13 +16,17 @@ the workflow then marks just this clip's Scene.status = "failed".
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from temporalio import activity
 
 import app.model  # noqa: F401
-from app.common.enum.scene import SceneStatus
+from app.common.enum.scene import SceneRenderStatus, SceneStatus
+from app.service.log_sink_service import LogSink
 from app.service.manim_render_service import (
     ClipBrief,
     ManimRenderService,
@@ -61,6 +65,12 @@ class GenerateClipInput:
 
     # Optional source frames (paths relative to STORAGE_DIR root) for vision context
     source_frame_paths: list[str] = field(default_factory=list)
+
+    # The parent workflow's execution id. Used to scope the scene_render
+    # row this activity writes for per-clip progress tracking. When
+    # absent (legacy callers / tests), per-clip tracking is silently
+    # skipped — the render still works the same.
+    workflow_execution_id: str | None = None
 
 
 @dataclass
@@ -138,13 +148,47 @@ async def generate_clip_activity(payload: GenerateClipInput) -> GenerateClipOutp
         manim_prompt=per_clip_brief,
     )
 
-    result = await ManimRenderService().render_clip(
-        brief,
-        prebuilt_script=script_code,
-        cached_script_hash=cache.script_code_hash,
-        cached_video_path=cached_video_path,
-    )
+    # 5a. Per-clip render tracking — opens a scene_render row + a
+    # LogSink that forwards the Manim subprocess's stderr into
+    # execution_log scoped to that row. The FE polls this table to
+    # render the per-clip progress strip and stderr stream.
+    # Skipped silently when workflow_execution_id is missing (legacy
+    # path, never in the new generate_workflow).
+    sink: LogSink | None = None
+    scene_render_id: str | None = None
+    if payload.workflow_execution_id:
+        scene_render_id, sink = _start_scene_render(
+            scene_id=payload.scene_id,
+            workflow_execution_id=payload.workflow_execution_id,
+        )
+
+    try:
+        result = await ManimRenderService().render_clip(
+            brief,
+            prebuilt_script=script_code,
+            cached_script_hash=cache.script_code_hash,
+            cached_video_path=cached_video_path,
+            log_sink=sink,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if scene_render_id:
+            _finish_scene_render(
+                scene_render_id, status=SceneRenderStatus.FAILED,
+                error_message=str(exc)[:1000],
+            )
+        if sink is not None:
+            sink.close()
+        raise
     activity.heartbeat("rendered")
+
+    if scene_render_id:
+        _finish_scene_render(
+            scene_render_id, status=SceneRenderStatus.SUCCEEDED,
+            render_method=result.render_method.value,
+            output_ref=str(result.video_file),
+        )
+    if sink is not None:
+        sink.close()
 
     # 6. Persist onto the Scene row
     await persist_clip_result_activity(PersistClipResultInput(
@@ -171,3 +215,92 @@ async def generate_clip_activity(payload: GenerateClipInput) -> GenerateClipOutp
         cached=result.cached,
         eval_score=result.eval_score,
     )
+
+
+# ── scene_render row helpers ────────────────────────────────────────────────
+#
+# Direct psycopg, not SQLAlchemy. The activity is running in a worker
+# thread (not the FastAPI request lifecycle) and we want one tiny
+# connection per call rather than dragging in the AsyncSession factory.
+
+def _open_sync_db():
+    import psycopg
+    return psycopg.connect(
+        settings.sync_database_url.replace(
+            "postgresql+psycopg://", "postgresql://"
+        ),
+        autocommit=True,
+        connect_timeout=10,
+    )
+
+
+def _start_scene_render(
+    *, scene_id: str, workflow_execution_id: str,
+) -> tuple[str, LogSink]:
+    """Insert PENDING → RUNNING scene_render row and open its LogSink.
+
+    Returns (scene_render_id, sink). Caller must `sink.close()` and
+    follow up with `_finish_scene_render(...)` on the way out.
+
+    Temporal activity context (activity_id, attempt) is captured here
+    for cross-correlation with the Temporal UI.
+    """
+    sr_id = f"sr_{uuid.uuid4()}"
+    info = activity.info()
+    now = datetime.now(timezone.utc)
+    conn = _open_sync_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO scene_render
+                (id, scene_id, workflow_execution_id, attempt, status,
+                 started_at, temporal_activity_id, temporal_attempt,
+                 created_at, updated_at)
+            VALUES (%s, %s, %s, 1, 'RUNNING', %s, %s, %s, now(), now())
+            """,
+            (sr_id, scene_id, workflow_execution_id, now,
+             info.activity_id, info.attempt),
+        )
+    finally:
+        conn.close()
+    sink = LogSink(scene_render_id=sr_id)
+    activity.logger.info(
+        "scene_render %s opened for scene=%s (execution=%s)",
+        sr_id, scene_id, workflow_execution_id,
+    )
+    return sr_id, sink
+
+
+def _finish_scene_render(
+    scene_render_id: str,
+    *,
+    status: SceneRenderStatus,
+    render_method: str | None = None,
+    output_ref: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Close the scene_render row — SUCCEEDED / FAILED / TIMED_OUT.
+
+    Computes `duration_ms` server-side from started_at so a worker
+    clock skew doesn't put it out of bounds.
+    """
+    conn = _open_sync_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE scene_render
+            SET status = %s,
+                completed_at = now(),
+                duration_ms = EXTRACT(MILLISECONDS FROM (now() - started_at))::INTEGER,
+                render_method = %s,
+                output_ref = %s,
+                error_message = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (status.value, render_method, output_ref, error_message, scene_render_id),
+        )
+    finally:
+        conn.close()

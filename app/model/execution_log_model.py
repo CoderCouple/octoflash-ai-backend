@@ -1,4 +1,9 @@
-"""ExecutionLog — log line under an execution_phase. Append-only."""
+"""ExecutionLog — log line, scoped to EITHER a workflow phase OR a per-clip render.
+
+Append-only. Exactly one of `execution_phase_id` / `scene_render_id` is
+set (DB CHECK constraint enforces). Migration 0007 added scene_render
+support so the Manim subprocess's stderr stream can be queried per-clip.
+"""
 
 import uuid
 
@@ -20,7 +25,13 @@ class ExecutionLog(Base):
     execution_phase_id = Column(
         String(),
         ForeignKey("execution_phase.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    scene_render_id = Column(
+        String(),
+        ForeignKey("scene_render.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     log_level = Column(

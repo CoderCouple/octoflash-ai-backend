@@ -17,6 +17,7 @@ from app.model.org_membership_model import OrgMembership  # noqa: F401
 from app.model.organization_model import Organization  # noqa: F401
 from app.model.project_model import Project  # noqa: F401
 from app.model.scene_model import Scene  # noqa: F401
+from app.model.scene_render_model import SceneRender  # noqa: F401
 from app.model.source_model import Source  # noqa: F401
 from app.model.source_video_model import SourceVideo  # noqa: F401
 from app.model.subscription_model import Subscription  # noqa: F401

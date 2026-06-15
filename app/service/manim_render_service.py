@@ -109,6 +109,7 @@ class ManimRenderService:
         prebuilt_script: str | None = None,
         cached_script_hash: str | None = None,
         cached_video_path: Path | None = None,
+        log_sink: object | None = None,
     ) -> RenderResult:
         """Run the 4-attempt fallback chain + improvement loop.
 
@@ -204,6 +205,7 @@ class ManimRenderService:
                 logger.info("attempt 1: claude+voice (%d chars)", len(claude_code))
                 result = await self._render_scene_subprocess(
                     brief.clip_id, claude_code, brief.quality, portrait, brief.voice_id,
+                    log_sink=log_sink,
                 )
                 scene_code, method = claude_code, RenderMethod.CLAUDE_VOICE
             except Exception as e:
@@ -223,6 +225,7 @@ class ManimRenderService:
                 no_voice = sanitize_script(strip_voiceover(claude_code))
                 result = await self._render_scene_subprocess(
                     brief.clip_id, no_voice, brief.quality, portrait, brief.voice_id,
+                    log_sink=log_sink,
                 )
                 scene_code, method = no_voice, RenderMethod.CLAUDE_NOVOICE
                 script_file_path = save_script(brief.clip_id, no_voice)
@@ -246,6 +249,7 @@ class ManimRenderService:
                 )
                 result = await self._render_scene_subprocess(
                     brief.clip_id, fresh_no_voice, brief.quality, portrait, brief.voice_id,
+                    log_sink=log_sink,
                 )
                 scene_code, method = fresh_no_voice, RenderMethod.CLAUDE_NOVOICE_FRESH
                 script_file_path = save_script(brief.clip_id, fresh_no_voice)
@@ -268,6 +272,7 @@ class ManimRenderService:
                 current_result=result,
                 current_code=scene_code,
                 brief=brief,
+                log_sink=log_sink,
             )
             video_file = Path(result["video_file"])
 
@@ -309,10 +314,12 @@ class ManimRenderService:
         quality: str,
         portrait: bool,
         voice_id: str,
+        log_sink: object | None = None,
     ) -> dict:
         """Write scene.py and run `manim` as a subprocess. Returns paths + stderr."""
         return await asyncio.to_thread(
             _render_scene_sync, clip_id, scene_code, quality, portrait, voice_id,
+            log_sink,
         )
 
     async def _improvement_loop(
@@ -321,6 +328,7 @@ class ManimRenderService:
         current_result: dict,
         current_code: str,
         brief: ClipBrief,
+        log_sink: object | None = None,
     ) -> tuple[dict, str, int | None, str | None]:
         """Run evaluate → regenerate → re-render up to MAX_IMPROVEMENT_ITERATIONS times.
 
@@ -375,6 +383,7 @@ class ManimRenderService:
                 )
                 new_result = await self._render_scene_subprocess(
                     clip_id, improved, brief.quality, portrait, brief.voice_id,
+                    log_sink=log_sink,
                 )
                 code, result = improved, new_result
                 save_script(clip_id, improved)
@@ -396,9 +405,16 @@ def _render_scene_sync(
     quality: str,
     portrait: bool,
     voice_id: str,
+    log_sink: object | None = None,
 ) -> dict:
-    """Write scene.py and run `manim`. Sync — caller wraps in asyncio.to_thread."""
+    """Write scene.py and run `manim`. Sync — caller wraps in asyncio.to_thread.
+
+    When `log_sink` is provided (a LogSink), the subprocess's stdout +
+    stderr stream live into execution_log scoped to its scene_render row.
+    When None (legacy callers / playground), output is captured in bulk.
+    """
     import time as _time
+    import threading as _threading
 
     job_dir = STORAGE_DIR / "renders" / clip_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -464,25 +480,77 @@ def _render_scene_sync(
     logger.info("manim cmd: %s", " ".join(cmd))
 
     t0 = _time.time()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=1800,  # 30 min — landscape + voiceover legitimately needs this
-        cwd=str(STORAGE_DIR.parent),
-        env=_build_env(voice_id=voice_id),
-    )
-    took = _time.time() - t0
+    if log_sink is None:
+        # Legacy path — bulk capture. Kept for playground + any caller
+        # that doesn't care about live streaming.
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            cwd=str(STORAGE_DIR.parent),
+            env=_build_env(voice_id=voice_id),
+        )
+        took = _time.time() - t0
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
+        returncode = result.returncode
+    else:
+        # Streaming path — Popen + two reader threads that forward each
+        # line into the LogSink (which batches + INSERTs into
+        # execution_log every ~500ms). Local copies still accumulate
+        # so `_classify_error` + the final error log keep working.
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # line-buffered
+            cwd=str(STORAGE_DIR.parent),
+            env=_build_env(voice_id=voice_id),
+        )
+
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def _drain(stream, sink_level: str, dest: list[str]) -> None:
+            for raw in iter(stream.readline, ""):
+                line = raw.rstrip("\n")
+                dest.append(line)
+                try:
+                    log_sink.write(sink_level, line)
+                except Exception:  # noqa: BLE001
+                    # Sink failures are non-fatal — the render must keep going.
+                    pass
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        t_out = _threading.Thread(target=_drain, args=(proc.stdout, "stdout", stdout_lines))
+        t_err = _threading.Thread(target=_drain, args=(proc.stderr, "stderr", stderr_lines))
+        t_out.start(); t_err.start()
+        try:
+            returncode = proc.wait(timeout=1800)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            t_out.join(timeout=5); t_err.join(timeout=5)
+            raise
+        t_out.join(); t_err.join()
+        took = _time.time() - t0
+        stdout_text = "\n".join(stdout_lines)
+        stderr_text = "\n".join(stderr_lines)
+
     logger.info(
         "manim subprocess done: returncode=%d took=%.1fs stdout_chars=%d stderr_chars=%d",
-        result.returncode, took, len(result.stdout), len(result.stderr),
+        returncode, took, len(stdout_text), len(stderr_text),
     )
 
-    if result.returncode != 0:
-        msg = _classify_error(result.stderr)
+    if returncode != 0:
+        msg = _classify_error(stderr_text)
         logger.error(
             "manim FAILED: returncode=%d class=%s\n--- stderr (last 3000) ---\n%s",
-            result.returncode, scene_class, result.stderr[-3000:],
+            returncode, scene_class, stderr_text[-3000:],
         )
         raise RuntimeError(msg)
 

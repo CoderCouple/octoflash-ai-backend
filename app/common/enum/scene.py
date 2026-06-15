@@ -42,3 +42,20 @@ class RenderMethod(str, Enum):
     CLAUDE_NOVOICE = "claude_novoice"
     CLAUDE_NOVOICE_FRESH = "claude_novoice_fresh"
     SIMPLE_FALLBACK = "simple_fallback"
+
+
+class SceneRenderStatus(str, Enum):
+    """Per-attempt lifecycle for one scene render.
+
+    PENDING   — row created at activity entry, before subprocess.
+    RUNNING   — manim subprocess started.
+    SUCCEEDED — MP4 produced + uploaded to Supabase Storage.
+    FAILED    — exhausted all internal retries in manim_render_service.
+    TIMED_OUT — exceeded playground_timeout_seconds or activity timeout.
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"

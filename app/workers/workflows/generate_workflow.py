@@ -230,6 +230,7 @@ class GenerateVideoWorkflow:
                         voice_id=input.voice_id,
                         quality=input.quality,
                         source_frame_paths=input.source_frame_paths,
+                        workflow_execution_id=input.execution_id,
                     ),
                     # Single clip: script_gen (~75s) + render (~35s) + eval (~25s) ≈ 2-5 min.
                     # No heartbeat_timeout — the activity doesn't call
