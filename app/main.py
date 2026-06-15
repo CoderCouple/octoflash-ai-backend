@@ -45,9 +45,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Debug mode: {settings.debug}")
 
+    _bootstrap_storage_buckets()
+
     yield
 
     logger.info("Shutting down application")
+
+
+def _bootstrap_storage_buckets() -> None:
+    """Make sure the Supabase `avatars` + `renders` buckets exist.
+
+    Idempotent — if both already exist, supabase-py returns the existing
+    list and we no-op. Skipped silently when SUPABASE_SERVICE_ROLE_KEY
+    is unset (local dev / tests) so the app still boots without the
+    storage backend wired.
+
+    Failures are logged but never block startup — a transient Supabase
+    outage shouldn't take the API down, and bucket creation is one-time
+    work that can be retried on the next deploy.
+    """
+    if not settings.supabase_service_role_key:
+        logger.info("storage bootstrap skipped (SUPABASE_SERVICE_ROLE_KEY unset)")
+        return
+    try:
+        from app.service.supabase_storage_service import get_storage_service
+
+        get_storage_service().ensure_buckets()
+        logger.info("storage bootstrap ok (avatars + renders buckets verified)")
+    except Exception:  # noqa: BLE001
+        logger.exception("storage bootstrap failed — continuing without ensure")
 
 
 app = FastAPI(

@@ -39,7 +39,25 @@ for _name in (
 logger = logging.getLogger("app.workers")
 
 
+def _bootstrap_storage_buckets() -> None:
+    """Mirror of the API's startup bootstrap — the worker uploads final
+    renders, so it needs the `renders` bucket to exist before the first
+    ffmpeg_concat activity fires. Silent skip when storage isn't
+    configured; never blocks worker startup."""
+    if not settings.supabase_service_role_key:
+        logger.info("storage bootstrap skipped (SUPABASE_SERVICE_ROLE_KEY unset)")
+        return
+    try:
+        from app.service.supabase_storage_service import get_storage_service
+
+        get_storage_service().ensure_buckets()
+        logger.info("storage bootstrap ok (avatars + renders buckets verified)")
+    except Exception:  # noqa: BLE001
+        logger.exception("storage bootstrap failed — continuing without ensure")
+
+
 async def run() -> None:
+    _bootstrap_storage_buckets()
     client = await connect_temporal()
     # Default 100 (Temporal's normal) so hosted Anthropic gets the
     # parallelism it can comfortably handle. Drop to 1 via env when
