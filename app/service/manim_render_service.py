@@ -437,10 +437,20 @@ def _render_scene_sync(
     # NB: existing system-prompt rules were tuned for landscape coords
     # (.shift(UP*1.5) lands at upper-third). On 16-tall they land closer to
     # the middle. Acceptable for v1; full portrait-aware prompt comes later.
+    #
+    # Pixel dims are env-configurable for low-RAM dev containers:
+    # PORTRAIT_PIXEL_WIDTH / PORTRAIT_PIXEL_HEIGHT default to 1080×1920
+    # (production-grade); set 540×960 on Railway worker if the container
+    # has <1 GB RAM and ffmpeg is getting OOM-killed (BrokenPipeError
+    # in the streamed stderr). Logical 9×16 stays the same so scene
+    # composition is identical — only the output raster shrinks.
+    import os as _os
+    _pw = _os.environ.get("PORTRAIT_PIXEL_WIDTH", "1080")
+    _ph = _os.environ.get("PORTRAIT_PIXEL_HEIGHT", "1920")
     portrait_config = (
         "from manim import config\n"
-        "config.pixel_width = 1080\n"
-        "config.pixel_height = 1920\n"
+        f"config.pixel_width = {int(_pw)}\n"
+        f"config.pixel_height = {int(_ph)}\n"
         "config.frame_width = 9\n"
         "config.frame_height = 16\n"
         "\n"
