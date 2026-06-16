@@ -52,10 +52,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # same cache files, all of them starve and hit the activity timeout.
 # Running once at build-time bakes the cache into the image layer so
 # every subsequent container starts hot.
-RUN echo '\documentclass{standalone}\usepackage{amsmath}\begin{document}$x^2 + \sum_{i=1}^{n} y_i$\end{document}' \
-      > /tmp/warmup.tex \
- && cd /tmp && latex warmup.tex >/dev/null 2>&1 \
- && dvisvgm warmup.dvi -n -o warmup.svg >/dev/null 2>&1 \
+#
+# `|| true` because LaTeX warmup is best-effort — Docker build must
+# not fail if a font/package isn't quite where we expect. The
+# `texlive-*` install above is what actually matters; this just
+# pre-populates the cache.
+RUN echo '\documentclass{article}\begin{document}$x^2$\end{document}' > /tmp/warmup.tex \
+ && cd /tmp && latex -interaction=nonstopmode warmup.tex >/dev/null 2>&1 || true \
  && rm -f warmup.*
 
 RUN pip install --upgrade pip \
