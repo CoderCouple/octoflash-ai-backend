@@ -233,10 +233,18 @@ class GenerateVideoWorkflow:
                         workflow_execution_id=input.execution_id,
                     ),
                     # Single clip: script_gen (~75s) + render (~35s) + eval (~25s) ≈ 2-5 min.
+                    # Bumped from 15 → 30 min to absorb:
+                    #   * cold-container LaTeX font cache warmup on first
+                    #     render after a deploy (pre-warmed in Dockerfile
+                    #     but still ~30-90s in worst case)
+                    #   * the 3-attempt internal fallback chain when the
+                    #     first 1-2 attempts hit a slow Anthropic stream
+                    #   * voiceover gen via ElevenLabs (5-15s per phrase ×
+                    #     30+ phrases per 90s clip)
                     # No heartbeat_timeout — the activity doesn't call
                     # activity.heartbeat(), and applying a heartbeat budget
                     # without heartbeats causes spurious cancellations mid-stream.
-                    start_to_close_timeout=timedelta(minutes=15),
+                    start_to_close_timeout=timedelta(minutes=30),
                     retry_policy=_CLIP_RETRY,
                 )
                 for s in created.scenes

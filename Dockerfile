@@ -46,6 +46,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dvisvgm \
  && rm -rf /var/lib/apt/lists/*
 
+# Pre-warm LaTeX font/format cache at image-build time. Without this,
+# the FIRST render on a fresh container spends 5–10 min building the
+# cache — and with N parallel Manim subprocesses each racing for the
+# same cache files, all of them starve and hit the activity timeout.
+# Running once at build-time bakes the cache into the image layer so
+# every subsequent container starts hot.
+RUN echo '\documentclass{standalone}\usepackage{amsmath}\begin{document}$x^2 + \sum_{i=1}^{n} y_i$\end{document}' \
+      > /tmp/warmup.tex \
+ && cd /tmp && latex warmup.tex >/dev/null 2>&1 \
+ && dvisvgm warmup.dvi -n -o warmup.svg >/dev/null 2>&1 \
+ && rm -f warmup.*
+
 RUN pip install --upgrade pip \
     && pip install poetry==$POETRY_VERSION
 
