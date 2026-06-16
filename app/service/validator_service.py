@@ -80,11 +80,24 @@ _REQUIRED_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def validate(code: str) -> list[str]:
+def validate(code: str, *, voiceover: bool = True) -> list[str]:
     """Return a list of human-readable validation errors. Empty = pass.
 
     Always runs the syntax check first; if the code doesn't parse, returns just
     the syntax error and skips the pattern checks (they'd be misleading).
+
+    `voiceover` enforces scene-class / voiceover-call coherence:
+
+      * voiceover=True (default) — script must subclass `OctoflashScene` or
+        `Octoflash3DScene` (the VoiceoverScene-backed variants). Plain
+        `OctoflashSceneNoVoice` is rejected because the project asked for
+        narration.
+      * voiceover=False — script must subclass `OctoflashSceneNoVoice` AND
+        contain NO `self.voiceover(...)` calls. Otherwise Manim's runtime
+        invokes manim-voiceover → ElevenLabs from inside a "no voice"
+        render and the subprocess hangs on the HTTP call (root cause of
+        the 2026-06-15 generate stall — see scene_render execution_log
+        for the post-animation silent freeze).
     """
     if not code or not code.strip():
         return ["Code is empty."]
@@ -106,18 +119,51 @@ def validate(code: str) -> list[str]:
         if not pattern.search(code):
             errors.append(f"Missing required pattern: {message}")
 
+    # ── voiceover-mode coherence ────────────────────────────────────────
+    # Single source of truth — runs after the generic pattern check so
+    # the broader "must inherit Octoflash*" rule has already fired if
+    # the script uses a plain Scene.
+    if voiceover:
+        if re.search(r"class\s+\w+\s*\(\s*OctoflashSceneNoVoice\b", code):
+            errors.append(
+                "voiceover=True was requested but the scene class subclasses "
+                "`OctoflashSceneNoVoice`. Use `OctoflashScene` (or `Octoflash3DScene`) "
+                "so manim-voiceover binds the audio track."
+            )
+    else:
+        if re.search(r"class\s+\w+\s*\(\s*(?:OctoflashScene|Octoflash3DScene)\b", code):
+            errors.append(
+                "voiceover=False was requested but the scene class subclasses a "
+                "VoiceoverScene variant (`OctoflashScene` / `Octoflash3DScene`). "
+                "Use `OctoflashSceneNoVoice` instead — otherwise Manim's runtime "
+                "calls ElevenLabs and the subprocess hangs on the HTTP request."
+            )
+        if re.search(r"\bself\.voiceover\s*\(", code):
+            errors.append(
+                "voiceover=False but the script calls `self.voiceover(...)`. "
+                "Remove every voiceover block and replace its timing budget "
+                "with `self.wait(N)` calls."
+            )
+
     return errors
 
 
 async def generate_with_retry(
     call: Callable[[str | None], Awaitable[str]],
     max_attempts: int = 3,
+    *,
+    voiceover: bool = True,
 ) -> tuple[str, list[str]]:
     """Call → validate → retry-with-feedback loop.
 
     `call(feedback)` runs the (Claude) generator. On attempt 1, `feedback` is
     None. On attempts 2+, `feedback` is the concatenated error messages from
     the previous attempt — the generator should fold this into its prompt.
+
+    `voiceover` is forwarded to `validate()` so the mode-coherence checks
+    (right scene class, no stray `self.voiceover(` in no-voice scripts)
+    apply. The wrong-mode error becomes feedback for the next attempt
+    so Claude self-corrects.
 
     Returns `(passing_code, errors_history)`. If max_attempts is exhausted,
     returns the *last* code and the accumulated errors so the caller can decide
@@ -135,7 +181,7 @@ async def generate_with_retry(
                     attempt, max_attempts, "yes" if feedback else "no")
         code = await call(feedback)
         last_code = code
-        errors = validate(code)
+        errors = validate(code, voiceover=voiceover)
 
         if not errors:
             logger.info("validator: attempt %d passed (%d chars)", attempt, len(code))

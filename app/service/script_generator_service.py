@@ -952,7 +952,13 @@ async def generate_episode_script(
     # Cap at 2 validator attempts (was 3): historically the 3rd rarely
     # recovers what attempts 1+2 missed, and each attempt is a full Claude
     # round-trip. Drop saves ~$0.10/clip on the worst path.
-    code, validator_errors = await validator_retry(_one_attempt, max_attempts=2)
+    # Pass `voiceover` so the validator can enforce scene-class / voiceover-call
+    # coherence — without it Claude can produce OctoflashScene + self.voiceover(...)
+    # code even when the prompt said voiceover=False, which then hangs Manim's
+    # ElevenLabs HTTP call at runtime. See validator_service.validate docstring.
+    code, validator_errors = await validator_retry(
+        _one_attempt, max_attempts=2, voiceover=voiceover,
+    )
 
     if validator_errors:
         # Last-resort syntax check: if even the final attempt is broken, fail hard
