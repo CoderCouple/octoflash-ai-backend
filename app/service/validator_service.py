@@ -80,6 +80,72 @@ _REQUIRED_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+_MANIM_PIPELINE_PREFIX = "app.manim_pipeline."
+
+# Cache of resolved module symbol sets so we don't re-import on every
+# clip in a workflow. Populated lazily on first validate() call.
+_pipeline_symbols_cache: dict[str, frozenset[str]] = {}
+
+
+def _pipeline_symbols(module_name: str) -> frozenset[str] | None:
+    """Return the set of public symbols exported by an `app.manim_pipeline.*`
+    module, or None when the module can't be resolved (caller skips the
+    check rather than failing the whole script). Cached forever — the
+    pipeline modules are static within a worker process."""
+    if module_name in _pipeline_symbols_cache:
+        return _pipeline_symbols_cache[module_name]
+    try:
+        import importlib
+        m = importlib.import_module(module_name)
+    except Exception:  # noqa: BLE001
+        return None
+    syms = frozenset(n for n in dir(m) if not n.startswith("_"))
+    _pipeline_symbols_cache[module_name] = syms
+    return syms
+
+
+def _hallucinated_imports(tree: ast.AST) -> list[str]:
+    """Walk a parsed script and return human-readable errors for any
+    `from app.manim_pipeline.X import (a, b, c)` where a/b/c don't
+    actually exist on module X.
+
+    Catches Claude hallucinating helper functions that match the naming
+    style of our utility library but aren't there (e.g. the
+    `animate_weight_matrix` import that hung the 2026-06-15 run). The
+    error message includes the closest real symbols so the next retry
+    has actionable feedback.
+    """
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not node.module or not node.module.startswith(_MANIM_PIPELINE_PREFIX):
+            continue
+        symbols = _pipeline_symbols(node.module)
+        if symbols is None:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                # Star imports are allowed and impossible to validate
+                # statically — leave them alone.
+                continue
+            if alias.name not in symbols:
+                # Suggest the closest 3 real symbols so Claude can
+                # self-correct on the retry. difflib is in stdlib.
+                import difflib
+                close = difflib.get_close_matches(alias.name, symbols, n=3, cutoff=0.6)
+                hint = (
+                    f" Did you mean: {', '.join(close)}?"
+                    if close
+                    else f" (Module exports {len(symbols)} names — see the system prompt's utility list.)"
+                )
+                errors.append(
+                    f"Imported name `{alias.name}` does not exist in {node.module}."
+                    + hint
+                )
+    return errors
+
+
 def validate(code: str, *, voiceover: bool = True) -> list[str]:
     """Return a list of human-readable validation errors. Empty = pass.
 
@@ -104,7 +170,7 @@ def validate(code: str, *, voiceover: bool = True) -> list[str]:
 
     # Syntax check first — pattern checks on syntactically-broken code lie.
     try:
-        ast.parse(code)
+        tree = ast.parse(code)
     except SyntaxError as e:
         return [f"SyntaxError at line {e.lineno}: {e.msg}"]
 
@@ -118,6 +184,12 @@ def validate(code: str, *, voiceover: bool = True) -> list[str]:
     for pattern, message in _REQUIRED_PATTERNS:
         if not pattern.search(code):
             errors.append(f"Missing required pattern: {message}")
+
+    # ── AST: resolve every app.manim_pipeline.* import against reality ──
+    # Catches Claude hallucinating helpers that match our naming style
+    # but don't exist (animate_weight_matrix etc.). Slow-ish on first
+    # call because it imports the modules; cached after that.
+    errors.extend(_hallucinated_imports(tree))
 
     # ── voiceover-mode coherence ────────────────────────────────────────
     # Single source of truth — runs after the generic pattern check so
