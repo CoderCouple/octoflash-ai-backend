@@ -31,6 +31,10 @@ from app.settings import settings
 class AnalyzeSourceInput:
     project_id: str
     source_url: str
+    # Owner — used to look up per-user YouTube cookies (stored via the
+    # browser extension as credential `youtube_cookies`) and feed them to
+    # yt-dlp. Without cookies, YouTube IP-blocks data-center scrapers.
+    user_id: str | None = None
 
 
 @dataclass
@@ -47,13 +51,73 @@ class AnalyzeSourceOutput:
     extra: dict[str, str] = field(default_factory=dict)
 
 
-def _download_video(url: str, project_id: str) -> Path:
+def _user_youtube_cookies_file(user_id: str | None, target_dir: Path) -> Path | None:
+    """Write the caller's stored YouTube cookies to a temp file and return
+    its path, or None if the user has no cookies on file.
+
+    The browser extension uploads cookies via `PUT /credentials/youtube_cookies`
+    — the credential vault encrypts at rest via Fernet. Here we open a
+    short-lived sync psycopg connection, decrypt, and write a 0600
+    cookies.txt that yt-dlp can consume with `--cookies`.
+
+    Sync — called from inside `asyncio.to_thread(_download_video, ...)`.
+    """
+    if not user_id:
+        return None
+    try:
+        import psycopg
+
+        from app.common.security.secret_crypto import decrypt
+    except Exception:
+        activity.logger.warning("psycopg / secret_crypto import failed; skipping cookies")
+        return None
+
+    dsn = settings.sync_database_url.replace("postgresql+psycopg://", "postgresql://")
+    try:
+        with psycopg.connect(dsn, connect_timeout=10) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT value FROM credential "
+                "WHERE user_id = %s AND name = %s AND is_deleted = false",
+                (user_id, "youtube_cookies"),
+            )
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        activity.logger.warning("cookies lookup failed for user=%s: %s", user_id, exc)
+        return None
+    if not row or not row[0]:
+        return None
+
+    try:
+        cookies_text = decrypt(row[0])
+    except Exception as exc:  # noqa: BLE001
+        activity.logger.warning("cookies decrypt failed for user=%s: %s", user_id, exc)
+        return None
+    if not cookies_text.strip():
+        return None
+
+    cookies_path = target_dir / "yt_cookies.txt"
+    cookies_path.write_text(cookies_text)
+    try:
+        cookies_path.chmod(0o600)
+    except OSError:
+        pass
+    activity.logger.info("yt-dlp cookies loaded for user=%s (%d bytes)", user_id, len(cookies_text))
+    return cookies_path
+
+
+def _download_video(url: str, project_id: str, user_id: str | None = None) -> Path:
     """yt-dlp the source video into storage/projects/<project_id>/source.<ext>.
 
     YouTube aggressively blocks data-center IPs (Railway, Render, etc.)
     as scrapers, so the `web` extractor frequently 403s. The `android`
     + `ios` player clients use a different cert path that's been more
     reliable in practice.
+
+    If the project owner has uploaded YouTube cookies via the browser
+    extension (stored as credential `youtube_cookies`), feed them to
+    yt-dlp via `--cookies` — that's the real fix for the IP block;
+    requests go out with a real signed-in session.
 
     Captures stderr explicitly so any yt-dlp failure surfaces as a real
     error message (the previous `--quiet` swallowed everything,
@@ -62,6 +126,8 @@ def _download_video(url: str, project_id: str) -> Path:
     storage_root = Path(settings.local_storage_path or "storage").resolve()
     target_dir = storage_root / "projects" / project_id
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    cookies_path = _user_youtube_cookies_file(user_id, target_dir)
 
     outtmpl = str(target_dir / "source.%(ext)s")
     cmd = [
@@ -75,6 +141,8 @@ def _download_video(url: str, project_id: str) -> Path:
         "-o", outtmpl,
         url,
     ]
+    if cookies_path:
+        cmd[1:1] = ["--cookies", str(cookies_path)]
     activity.logger.info("yt-dlp: %s", " ".join(cmd))
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=300, check=False,
@@ -126,7 +194,9 @@ async def analyze_source_activity(payload: AnalyzeSourceInput) -> AnalyzeSourceO
         )
 
     # 1. Download
-    video_path = await asyncio.to_thread(_download_video, payload.source_url, payload.project_id)
+    video_path = await asyncio.to_thread(
+        _download_video, payload.source_url, payload.project_id, payload.user_id,
+    )
     activity.heartbeat("downloaded")
 
     # 2. Frames @ 1 fps

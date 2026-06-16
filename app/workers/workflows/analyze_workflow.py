@@ -72,6 +72,10 @@ class AnalyzeProjectInput:
     source_url: str
     title_was_unset: bool = True  # if True, overwrite Project.title with title_hint
     max_clips: int = 8
+    # Owner — forwarded to AnalyzeSourceInput so the activity can pull
+    # the user's YouTube cookies from the credential vault and feed them
+    # to yt-dlp. Without this, YouTube IP-blocks data-center scrapers.
+    user_id: str | None = None
 
 
 async def _mark_job_failed(execution_id: str, exc: BaseException) -> None:
@@ -131,6 +135,7 @@ class AnalyzeProjectWorkflow:
                 AnalyzeSourceInput(
                     project_id=input.project_id,
                     source_url=input.source_url,
+                    user_id=input.user_id,
                 ),
                 # Whisper fallback on a long video can take minutes; allow 20.
                 start_to_close_timeout=timedelta(minutes=20),

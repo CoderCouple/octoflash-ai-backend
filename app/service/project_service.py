@@ -266,6 +266,7 @@ class ProjectService:
                 project_id=project.id,
                 source_url=source_url,
                 title_was_unset=(title is None),
+                user_id=project.user_id,
             ),
             id=temporal_workflow_id,
             task_queue=settings.temporal_task_queue,

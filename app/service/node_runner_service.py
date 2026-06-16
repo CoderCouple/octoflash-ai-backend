@@ -237,6 +237,7 @@ class NodeRunnerService:
                 project_id=project.id,
                 source_url=source_url,
                 title_was_unset=False,  # title already set on rerun
+                user_id=project.user_id,
             ),
             kind=WorkflowKind.ANALYZE,
             handle_prefix="analyze",
