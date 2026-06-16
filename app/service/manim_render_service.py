@@ -571,13 +571,24 @@ def _render_scene_sync(
         raise RuntimeError(msg)
 
     video_file = _find_rendered_video(media_dir)
-    if video_file:
-        logger.info("manim produced: %s (%d bytes)", video_file, video_file.stat().st_size)
-    else:
-        logger.warning("manim succeeded but no .mp4 found under %s/videos/", media_dir)
+    if not video_file:
+        # Manim exited with returncode 0 but produced no .mp4 — usually
+        # means the FFmpeg encoder died mid-stream (OOM, disk-full, or
+        # explicit kill) and Manim swallowed the BrokenPipeError without
+        # marking the run as failed. Treat as a failure so the
+        # render_clip fallback chain moves on to attempt 2 instead of
+        # crashing on `Path(None)` further up.
+        msg = (
+            "Manim exited rc=0 but produced no .mp4 — likely FFmpeg "
+            "subprocess was killed (OOM?). Last stderr 800 chars: "
+            f"{stderr_text[-800:]}"
+        )
+        logger.error("manim: no-video failure: %s", msg[:300])
+        raise RuntimeError(msg)
+    logger.info("manim produced: %s (%d bytes)", video_file, video_file.stat().st_size)
     return {
         "scene_file": str(scene_file),
-        "video_file": str(video_file) if video_file else None,
+        "video_file": str(video_file),
         "media_dir": str(media_dir),
         # `stderr_text` is unified across both the legacy bulk-capture
         # and the streaming Popen paths — the latter joins line-by-line
