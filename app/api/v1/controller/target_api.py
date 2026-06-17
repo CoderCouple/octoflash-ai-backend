@@ -73,8 +73,7 @@ async def get_target(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
-    # service-side tenant filter is a follow-up.
-    result = await service.get(target_id)
+    result = await service.get(target_id, user_id=ctx.user_id)
     return success_response(result, "Target fetched")
 
 
@@ -102,8 +101,7 @@ async def update_target(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
-    # service-side tenant filter is a follow-up.
-    result = await service.update(target_id, body)
+    result = await service.update(target_id, user_id=ctx.user_id, body=body)
     return success_response(result, "Target updated")
 
 
@@ -113,8 +111,7 @@ async def delete_target(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
-    # service-side tenant filter is a follow-up.
-    await service.delete(target_id)
+    await service.delete(target_id, user_id=ctx.user_id)
     return success_response(None, "Target deleted")
 
 

@@ -70,8 +70,7 @@ async def get_project(
     service: ProjectService = Depends(get_project_service),
 ):
     """Get project + scenes + workflow (matches frontend's project detail shape)."""
-    # service-side tenant filter is a follow-up.
-    result = await service.get_project_detail(project_id)
+    result = await service.get_project_detail(project_id, user_id=ctx.user_id)
     return success_response(result, "Project fetched")
 
 
@@ -83,8 +82,12 @@ async def update_project(
     service: ProjectService = Depends(get_project_service),
 ):
     """Rename project, update source_url, etc."""
-    # service-side tenant filter is a follow-up.
-    result = await service.update_project(project_id, title=body.title, source_url=body.source_url)
+    result = await service.update_project(
+        project_id,
+        user_id=ctx.user_id,
+        title=body.title,
+        source_url=body.source_url,
+    )
     return success_response(result, "Project updated")
 
 
@@ -95,8 +98,7 @@ async def delete_project(
     service: ProjectService = Depends(get_project_service),
 ):
     """Soft-delete a project."""
-    # service-side tenant filter is a follow-up.
-    await service.delete_project(project_id)
+    await service.delete_project(project_id, user_id=ctx.user_id)
     return success_response(None, "Project deleted")
 
 
@@ -156,9 +158,11 @@ async def generate_video(
     `final_landscape_video_url` on the Project (each with its own scene set).
     Returns 202 with a list of executions — poll each at `/executions/:id`.
     """
-    # service-side tenant filter is a follow-up.
     executions = await service.generate_video(
-        project_id, max_clips=max_clips, orientations=orientations,
+        project_id,
+        user_id=ctx.user_id,
+        max_clips=max_clips,
+        orientations=orientations,
     )
     return success_response(executions, "Generate workflow(s) started", 202)
 
@@ -181,8 +185,9 @@ async def preview_final_video(
     records (older dev runs only) we still stream the file directly so
     nothing already in the dev DB breaks.
     """
-    # service-side tenant filter is a follow-up.
-    ref = await service.get_final_video_ref(project_id, orientation=orientation)
+    ref = await service.get_final_video_ref(
+        project_id, user_id=ctx.user_id, orientation=orientation,
+    )
 
     if ref.startswith("supabase://"):
         # Format: supabase://<bucket>/<path>. Re-sign every call so the

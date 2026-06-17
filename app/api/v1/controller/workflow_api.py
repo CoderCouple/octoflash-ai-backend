@@ -51,8 +51,7 @@ async def get_workflow_for_project(
     service: WorkflowService = Depends(get_workflow_service),
 ):
     """Return the Project's 1:1 workflow. Lazily creates an empty one if missing."""
-    # service-side tenant filter is a follow-up.
-    result = await service.get_for_project(project_id)
+    result = await service.get_for_project(project_id, user_id=ctx.user_id)
     return success_response(result, "Workflow fetched")
 
 
@@ -66,8 +65,7 @@ async def get_workflow(
     service: WorkflowService = Depends(get_workflow_service),
 ):
     """Get a workflow by id. `definition` is the React Flow source-of-truth."""
-    # service-side tenant filter is a follow-up.
-    result = await service.get_by_id(workflow_id)
+    result = await service.get_by_id(workflow_id, user_id=ctx.user_id)
     return success_response(result, "Workflow fetched")
 
 
@@ -86,8 +84,7 @@ async def put_workflow(
     Persists `definition` JSONB verbatim AND syncs the projection rows in
     workflow_node_instance + workflow_edge_instance for queryability.
     """
-    # service-side tenant filter is a follow-up.
-    result = await service.put_definition(workflow_id, body)
+    result = await service.put_definition(workflow_id, ctx.user_id, body)
     return success_response(result, "Workflow saved")
 
 
@@ -106,11 +103,11 @@ async def delete_workflow(
     in-flight Temporal workflows terminated, executions canceled, project +
     workflow soft-deleted, local storage rmtree'd.
     """
-    # service-side tenant filter is a follow-up.
     workflow = await WorkflowRepository(db).get_by_id(workflow_id)
-    if workflow is None:
+    if workflow is None or workflow.user_id != ctx.user_id:
+        # 404 not 403 — don't leak that the row exists under a different user.
         raise EntityNotFoundError("Workflow", workflow_id)
-    await ProjectService(db).delete_project(workflow.project_id)
+    await ProjectService(db).delete_project(workflow.project_id, user_id=ctx.user_id)
     return success_response(None, "Workflow + project deleted")
 
 
@@ -132,8 +129,7 @@ async def delete_workflow_node(
     touching edge rows). Historical execution rows survive via
     `workflow_execution.node_instance_id ON DELETE SET NULL`.
     """
-    # service-side tenant filter is a follow-up.
-    await service.delete_node(workflow_id, node_instance_id)
+    await service.delete_node(workflow_id, node_instance_id, user_id=ctx.user_id)
     return success_response(None, "Node deleted")
 
 

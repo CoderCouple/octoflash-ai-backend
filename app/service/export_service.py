@@ -17,15 +17,26 @@ class ExportService:
         self.db = db
 
     async def queue_preview(
-        self, project_id: str, end_node_id: str | None = None
+        self,
+        project_id: str,
+        user_id: str,
+        end_node_id: str | None = None,
     ) -> WorkflowExecutionResponse:
+        # user_id is threaded for the ownership check that the real
+        # implementation will perform once task 12 lands.
         raise NotImplementedError(
             "Preview pipeline not wired yet — pending task 12 (workflow rewire)."
         )
 
     async def queue_export(
-        self, project_id: str, end_node_id: str | None = None, format: str = "mp4"
+        self,
+        project_id: str,
+        user_id: str,
+        end_node_id: str | None = None,
+        format: str = "mp4",
     ) -> WorkflowExecutionResponse:
+        # user_id is threaded for the ownership check that the real
+        # implementation will perform once task 12 lands.
         raise NotImplementedError(
             "Export pipeline not wired yet — pending task 12 (workflow rewire)."
         )

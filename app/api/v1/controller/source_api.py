@@ -52,8 +52,9 @@ async def get_source(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
-    # service-side tenant filter is a follow-up.
-    result = await service.get_detail(source_id, video_limit=video_limit)
+    result = await service.get_detail(
+        source_id, user_id=ctx.user_id, video_limit=video_limit,
+    )
     return success_response(result, "Source fetched")
 
 
@@ -81,8 +82,7 @@ async def update_source(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
-    # service-side tenant filter is a follow-up.
-    result = await service.update(source_id, body)
+    result = await service.update(source_id, user_id=ctx.user_id, body=body)
     return success_response(result, "Source updated")
 
 
@@ -92,8 +92,7 @@ async def delete_source(
     ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
-    # service-side tenant filter is a follow-up.
-    await service.delete(source_id)
+    await service.delete(source_id, user_id=ctx.user_id)
     return success_response(None, "Source deleted")
 
 
@@ -104,6 +103,5 @@ async def sync_source(
     service: SourceService = Depends(get_source_service),
 ):
     """Re-fetch recent videos for the source. 501 until the YouTube fetcher lands."""
-    # service-side tenant filter is a follow-up.
-    await service.sync_videos(source_id)
+    await service.sync_videos(source_id, user_id=ctx.user_id)
     return success_response(None, "Source synced")

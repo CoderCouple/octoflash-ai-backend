@@ -55,9 +55,12 @@ class ProjectService:
         project = await self.project_repo.create(project)
         return ProjectResponse.model_validate(project)
 
-    async def get_project_detail(self, project_id: str) -> ProjectDetailResponse:
+    async def get_project_detail(
+        self, project_id: str, user_id: str
+    ) -> ProjectDetailResponse:
         project = await self.project_repo.get_by_id(project_id)
-        if not project:
+        if project is None or project.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Project", project_id)
 
         scenes = await self.scene_repo.list_by_project(project_id)
@@ -87,11 +90,12 @@ class ProjectService:
     async def update_project(
         self,
         project_id: str,
+        user_id: str,
         title: str | None = None,
         source_url: str | None = None,
     ) -> ProjectResponse:
         project = await self.project_repo.get_by_id(project_id)
-        if not project:
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Project", project_id)
 
         if title is not None:
@@ -102,7 +106,7 @@ class ProjectService:
         project = await self.project_repo.update(project)
         return ProjectResponse.model_validate(project)
 
-    async def delete_project(self, project_id: str) -> None:
+    async def delete_project(self, project_id: str, user_id: str) -> None:
         """Delete a project end-to-end.
 
         Cleanup steps (best-effort; one failure must not block the rest):
@@ -125,7 +129,7 @@ class ProjectService:
         log = logging.getLogger(__name__)
 
         project = await self.project_repo.get_by_id(project_id)
-        if not project:
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Project", project_id)
 
         workflow_repo = WorkflowRepository(self.db)
@@ -158,7 +162,7 @@ class ProjectService:
                 )
 
     async def get_final_video_ref(
-        self, project_id: str, orientation: str = "portrait"
+        self, project_id: str, user_id: str, orientation: str = "portrait"
     ) -> str:
         """Return the raw `final_<orientation>_video_url` value.
 
@@ -172,7 +176,7 @@ class ProjectService:
         from fastapi import HTTPException, status
 
         project = await self.project_repo.get_by_id(project_id)
-        if not project:
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Project", project_id)
 
         ref = (
@@ -289,6 +293,7 @@ class ProjectService:
     async def generate_video(
         self,
         project_id: str,
+        user_id: str,
         max_clips: int = 8,
         orientations: list[str] | None = None,
     ) -> list[WorkflowExecutionResponse]:
@@ -307,7 +312,7 @@ class ProjectService:
         from fastapi import HTTPException, status
 
         project = await self.project_repo.get_by_id(project_id)
-        if not project:
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Project", project_id)
         if not project.manim_prompt:
             raise HTTPException(

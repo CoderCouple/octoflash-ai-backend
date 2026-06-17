@@ -41,13 +41,17 @@ class WorkflowService:
 
     # ── load ────────────────────────────────────────────────────────────
 
-    async def get_for_project(self, project_id: str) -> WorkflowResponse:
+    async def get_for_project(
+        self, project_id: str, user_id: str
+    ) -> WorkflowResponse:
         """Sugar: return the Project's 1:1 workflow, creating an empty one if missing."""
+        # Resolve the project first so we can enforce ownership before
+        # either reading or lazy-creating the workflow row.
+        project = await self.project_repo.get_by_id(project_id)
+        if project is None or project.user_id != user_id:
+            raise EntityNotFoundError("Project", project_id)
         workflow = await self.workflow_repo.get_by_project_id(project_id)
         if workflow is None:
-            project = await self.project_repo.get_by_id(project_id)
-            if project is None:
-                raise EntityNotFoundError("Project", project_id)
             workflow = Workflow(
                 project_id=project_id,
                 user_id=project.user_id,
@@ -57,19 +61,20 @@ class WorkflowService:
             await self.db.commit()
         return await self._to_response(workflow)
 
-    async def get_by_id(self, workflow_id: str) -> WorkflowResponse:
+    async def get_by_id(self, workflow_id: str, user_id: str) -> WorkflowResponse:
         workflow = await self.workflow_repo.get_by_id(workflow_id)
-        if workflow is None:
+        if workflow is None or workflow.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Workflow", workflow_id)
         return await self._to_response(workflow)
 
     # ── save ────────────────────────────────────────────────────────────
 
     async def put_definition(
-        self, workflow_id: str, payload: PutWorkflowRequest
+        self, workflow_id: str, user_id: str, payload: PutWorkflowRequest
     ) -> WorkflowResponse:
         workflow = await self.workflow_repo.get_by_id(workflow_id)
-        if workflow is None:
+        if workflow is None or workflow.user_id != user_id:
             raise EntityNotFoundError("Workflow", workflow_id)
 
         defn = payload.definition
@@ -131,7 +136,9 @@ class WorkflowService:
 
     # ── deletes ─────────────────────────────────────────────────────────
 
-    async def delete_node(self, workflow_id: str, node_instance_id: str) -> None:
+    async def delete_node(
+        self, workflow_id: str, node_instance_id: str, user_id: str
+    ) -> None:
         """Delete one node from the workflow + clean up.
 
         Steps:
@@ -146,7 +153,7 @@ class WorkflowService:
         from app.service.workflow_execution_service import WorkflowExecutionService
 
         workflow = await self.workflow_repo.get_by_id(workflow_id)
-        if workflow is None:
+        if workflow is None or workflow.user_id != user_id:
             raise EntityNotFoundError("Workflow", workflow_id)
         node = await self.workflow_repo.get_node_instance_by_id(node_instance_id)
         if node is None or node.workflow_id != workflow_id:

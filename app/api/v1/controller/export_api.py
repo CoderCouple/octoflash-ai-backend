@@ -30,8 +30,9 @@ async def queue_preview(
     service: ExportService = Depends(get_export_service),
 ):
     """Quick low-quality stitch along the selected path."""
-    # service-side tenant filter is a follow-up.
-    job = await service.queue_preview(project_id, end_node_id=body.end_node_id)
+    job = await service.queue_preview(
+        project_id, user_id=ctx.user_id, end_node_id=body.end_node_id,
+    )
     return success_response(job, "Preview queued", 202)
 
 
@@ -47,6 +48,10 @@ async def queue_export(
     service: ExportService = Depends(get_export_service),
 ):
     """Full-quality stitch + encode."""
-    # service-side tenant filter is a follow-up.
-    job = await service.queue_export(project_id, end_node_id=body.end_node_id, format=body.format)
+    job = await service.queue_export(
+        project_id,
+        user_id=ctx.user_id,
+        end_node_id=body.end_node_id,
+        format=body.format,
+    )
     return success_response(job, "Export queued", 202)

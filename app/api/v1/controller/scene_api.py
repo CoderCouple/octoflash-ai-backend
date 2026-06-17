@@ -35,8 +35,7 @@ async def get_scene(
     service: SceneService = Depends(get_scene_service),
 ):
     """Fetch one scene — used by FE for per-clip status polling during render."""
-    # service-side tenant filter is a follow-up.
-    result = await service.get_scene(scene_id)
+    result = await service.get_scene(scene_id, user_id=ctx.user_id)
     return success_response(result, "Scene fetched")
 
 
@@ -47,8 +46,7 @@ async def preview_scene(
     service: SceneService = Depends(get_scene_service),
 ):
     """Stream the clip's MP4 — what the FE's per-node `<video>` element loads."""
-    # service-side tenant filter is a follow-up.
-    path = await service.get_scene_preview_path(scene_id)
+    path = await service.get_scene_preview_path(scene_id, user_id=ctx.user_id)
     return FileResponse(
         path,
         media_type="video/mp4",
@@ -72,8 +70,7 @@ async def regenerate_clip(
     Returns 202 + a Job to poll. Editing the clip's prompt first via PATCH
     /scenes/{id} is the typical flow before calling this.
     """
-    # service-side tenant filter is a follow-up.
-    job = await service.regenerate_clip(scene_id)
+    job = await service.regenerate_clip(scene_id, user_id=ctx.user_id)
     return success_response(job, "Regenerate workflow started", 202)
 
 
@@ -89,9 +86,9 @@ async def add_scene(
     service: SceneService = Depends(get_scene_service),
 ):
     """Add a scene to a project."""
-    # service-side tenant filter is a follow-up.
     result = await service.add_scene(
         project_id=project_id,
+        user_id=ctx.user_id,
         title=body.title,
         prompt=body.prompt,
         duration=body.duration,
@@ -108,9 +105,9 @@ async def update_scene(
     service: SceneService = Depends(get_scene_service),
 ):
     """Update editable fields of a scene (prompt, title, duration)."""
-    # service-side tenant filter is a follow-up.
     result = await service.update_scene(
         scene_id=scene_id,
+        user_id=ctx.user_id,
         title=body.title,
         prompt=body.prompt,
         duration=body.duration,
@@ -125,6 +122,5 @@ async def delete_scene(
     service: SceneService = Depends(get_scene_service),
 ):
     """Remove a scene from its project."""
-    # service-side tenant filter is a follow-up.
-    await service.delete_scene(scene_id)
+    await service.delete_scene(scene_id, user_id=ctx.user_id)
     return success_response(None, "Scene deleted")

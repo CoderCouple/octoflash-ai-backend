@@ -28,11 +28,16 @@ class SceneService:
     async def add_scene(
         self,
         project_id: str,
+        user_id: str,
         title: str | None = None,
         prompt: str | None = None,
         duration: float | None = None,
         n: int | None = None,
     ) -> SceneResponse:
+        # Ownership: scenes are scoped via the parent project's user_id.
+        project = await self.project_repo.get_by_id(project_id)
+        if project is None or project.user_id != user_id:
+            raise EntityNotFoundError("Project", project_id)
         slot = n if n is not None else await self.scene_repo.next_n_for_project(project_id)
         scene = Scene(
             project_id=project_id,
@@ -44,18 +49,25 @@ class SceneService:
         scene = await self.scene_repo.create(scene)
         return SceneResponse.model_validate(scene)
 
-    async def get_scene(self, scene_id: str) -> SceneResponse:
+    async def get_scene(self, scene_id: str, user_id: str) -> SceneResponse:
         scene = await self.scene_repo.get_by_id(scene_id)
-        if not scene:
+        if scene is None:
+            raise EntityNotFoundError("Scene", scene_id)
+        project = await self.project_repo.get_by_id(scene.project_id)
+        if project is None or project.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Scene", scene_id)
         return SceneResponse.model_validate(scene)
 
-    async def get_scene_preview_path(self, scene_id: str) -> Path:
+    async def get_scene_preview_path(self, scene_id: str, user_id: str) -> Path:
         """Return the on-disk MP4 path for streaming. Raises if missing."""
         from fastapi import HTTPException, status
 
         scene = await self.scene_repo.get_by_id(scene_id)
-        if not scene:
+        if scene is None:
+            raise EntityNotFoundError("Scene", scene_id)
+        project = await self.project_repo.get_by_id(scene.project_id)
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Scene", scene_id)
         if not scene.video_url:
             raise HTTPException(
@@ -73,12 +85,16 @@ class SceneService:
     async def update_scene(
         self,
         scene_id: str,
+        user_id: str,
         title: str | None = None,
         prompt: str | None = None,
         duration: float | None = None,
     ) -> SceneResponse:
         scene = await self.scene_repo.get_by_id(scene_id)
-        if not scene:
+        if scene is None:
+            raise EntityNotFoundError("Scene", scene_id)
+        project = await self.project_repo.get_by_id(scene.project_id)
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Scene", scene_id)
 
         if title is not None:
@@ -91,7 +107,7 @@ class SceneService:
         scene = await self.scene_repo.update(scene)
         return SceneResponse.model_validate(scene)
 
-    async def delete_scene(self, scene_id: str) -> None:
+    async def delete_scene(self, scene_id: str, user_id: str) -> None:
         """Delete one scene + clean up everything that points at it.
 
         Cleanup:
@@ -111,7 +127,10 @@ class SceneService:
         log = logging.getLogger(__name__)
 
         scene = await self.scene_repo.get_by_id(scene_id)
-        if not scene:
+        if scene is None:
+            raise EntityNotFoundError("Scene", scene_id)
+        project = await self.project_repo.get_by_id(scene.project_id)
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Scene", scene_id)
 
         workflow_repo = WorkflowRepository(self.db)
@@ -143,7 +162,9 @@ class SceneService:
                     scripts_dir, e,
                 )
 
-    async def regenerate_clip(self, scene_id: str) -> WorkflowExecutionResponse:
+    async def regenerate_clip(
+        self, scene_id: str, user_id: str
+    ) -> WorkflowExecutionResponse:
         """Kick off RegenerateClipWorkflow — re-renders just this clip + re-stitches the project.
 
         Reads the latest Scene + Project state, denormalizes both into the workflow
@@ -152,11 +173,12 @@ class SceneService:
         from fastapi import HTTPException, status
 
         scene = await self.scene_repo.get_by_id(scene_id)
-        if not scene:
+        if scene is None:
             raise EntityNotFoundError("Scene", scene_id)
         project = await self.project_repo.get_by_id(scene.project_id)
-        if not project:
-            raise EntityNotFoundError("Project", scene.project_id)
+        if project is None or project.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
+            raise EntityNotFoundError("Scene", scene_id)
         if not project.manim_prompt:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

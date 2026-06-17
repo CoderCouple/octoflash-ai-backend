@@ -34,6 +34,5 @@ async def get_execution(
     service: WorkflowExecutionService = Depends(get_execution_service),
 ):
     """Poll a workflow_execution by id."""
-    # service-side tenant filter is a follow-up.
-    response = await service.get_response(execution_id)
+    response = await service.get_response(execution_id, user_id=ctx.user_id)
     return success_response(response, "Execution fetched")

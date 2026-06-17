@@ -44,9 +44,10 @@ class TargetService:
         )
         return [self._to_response(t) for t in targets], total
 
-    async def get(self, target_id: str) -> TargetResponse:
+    async def get(self, target_id: str, user_id: str) -> TargetResponse:
         target = await self.target_repo.get_by_id(target_id)
-        if target is None:
+        if target is None or target.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Target", target_id)
         return self._to_response(target)
 
@@ -80,9 +81,11 @@ class TargetService:
         target = await self.target_repo.create(target)
         return self._to_response(target)
 
-    async def update(self, target_id: str, body: UpdateTargetRequest) -> TargetResponse:
+    async def update(
+        self, target_id: str, user_id: str, body: UpdateTargetRequest
+    ) -> TargetResponse:
         target = await self.target_repo.get_by_id(target_id)
-        if target is None:
+        if target is None or target.user_id != user_id:
             raise EntityNotFoundError("Target", target_id)
 
         for field in ("handle", "display_name", "avatar_url"):
@@ -123,9 +126,9 @@ class TargetService:
         target = await self.target_repo.update(target)
         return self._to_response(target)
 
-    async def delete(self, target_id: str) -> None:
+    async def delete(self, target_id: str, user_id: str) -> None:
         target = await self.target_repo.get_by_id(target_id)
-        if target is None:
+        if target is None or target.user_id != user_id:
             raise EntityNotFoundError("Target", target_id)
         await self.target_repo.soft_delete(target)
 

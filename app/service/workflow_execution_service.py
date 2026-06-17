@@ -159,14 +159,27 @@ class WorkflowExecutionService:
             started_at=started_at or datetime.now(timezone.utc),
         )
 
-    async def get(self, execution_id: str) -> WorkflowExecution:
+    async def get(
+        self, execution_id: str, user_id: str | None = None
+    ) -> WorkflowExecution:
+        """Load a WorkflowExecution by id.
+
+        When `user_id` is passed, enforce ownership; on mismatch raise 404
+        (not 403) so we don't leak that the row exists under a different
+        user. `user_id` is optional only so internal/worker callers can keep
+        cross-tenant reads — every request-path caller MUST pass it.
+        """
         execution = await self.execution_repo.get_by_id(execution_id)
         if execution is None:
             raise EntityNotFoundError("WorkflowExecution", execution_id)
+        if user_id is not None and execution.user_id != user_id:
+            raise EntityNotFoundError("WorkflowExecution", execution_id)
         return execution
 
-    async def get_response(self, execution_id: str) -> WorkflowExecutionResponse:
-        execution = await self.get(execution_id)
+    async def get_response(
+        self, execution_id: str, user_id: str | None = None
+    ) -> WorkflowExecutionResponse:
+        execution = await self.get(execution_id, user_id=user_id)
         phases = await self.execution_repo.list_phases(execution_id)
 
         if phases:

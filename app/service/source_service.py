@@ -44,9 +44,12 @@ class SourceService:
         )
         return [SourceResponse.model_validate(s) for s in sources], total
 
-    async def get_detail(self, source_id: str, video_limit: int = 50) -> SourceDetailResponse:
+    async def get_detail(
+        self, source_id: str, user_id: str, video_limit: int = 50
+    ) -> SourceDetailResponse:
         source = await self.source_repo.get_by_id(source_id)
-        if source is None:
+        if source is None or source.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Source", source_id)
         videos = await self.video_repo.list_for_source(source_id, 0, video_limit)
         return SourceDetailResponse(
@@ -161,9 +164,11 @@ class SourceService:
         source = await self.source_repo.create(source)
         return SourceResponse.model_validate(source)
 
-    async def update(self, source_id: str, body: UpdateSourceRequest) -> SourceResponse:
+    async def update(
+        self, source_id: str, user_id: str, body: UpdateSourceRequest
+    ) -> SourceResponse:
         source = await self.source_repo.get_by_id(source_id)
-        if source is None:
+        if source is None or source.user_id != user_id:
             raise EntityNotFoundError("Source", source_id)
         for field in ("name", "handle", "description", "subscriber_count", "accent_color"):
             value = getattr(body, field)
@@ -174,13 +179,13 @@ class SourceService:
         source = await self.source_repo.update(source)
         return SourceResponse.model_validate(source)
 
-    async def delete(self, source_id: str) -> None:
+    async def delete(self, source_id: str, user_id: str) -> None:
         source = await self.source_repo.get_by_id(source_id)
-        if source is None:
+        if source is None or source.user_id != user_id:
             raise EntityNotFoundError("Source", source_id)
         await self.source_repo.soft_delete(source)
 
-    async def sync_videos(self, source_id: str) -> int:
+    async def sync_videos(self, source_id: str, user_id: str) -> int:
         """Fetch the latest videos for this source and upsert them.
 
         yt-dlp runs synchronously, so we offload to a thread. Upserts go
@@ -192,7 +197,7 @@ class SourceService:
         value); other platforms will land via the same dispatcher when added.
         """
         source = await self.source_repo.get_by_id(source_id)
-        if source is None:
+        if source is None or source.user_id != user_id:
             raise EntityNotFoundError("Source", source_id)
 
         platform = (
