@@ -137,7 +137,15 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
         # Anti-bot workarounds for data-center IPs:
         "--extractor-args", "youtube:player_client=android,ios,web",
         "--geo-bypass",
-        "-f", "best[height<=720]/best",
+        # Format ladder — first match wins:
+        #   1. mp4-only ≤720 (cheap, no ffmpeg merge)
+        #   2. any ≤720 (mp4 / webm / mkv — ok, we transcode later anyway)
+        #   3. bestvideo + bestaudio merge (Shorts often only ship DASH /
+        #      separate streams; this catches them)
+        #   4. `best` / `worst` as last-ditch fallbacks so we don't 404
+        #      on weird format manifests
+        "-f",
+        "best[ext=mp4][height<=720]/best[height<=720]/bestvideo+bestaudio/best/worst",
         "-o", outtmpl,
         url,
     ]
