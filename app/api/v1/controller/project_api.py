@@ -15,6 +15,7 @@ from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.from_source_response import CreateProjectFromSourceResponse
 from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.project_response import ProjectDetailResponse, ProjectResponse
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
 from app.service.project_service import ProjectService
@@ -87,6 +88,7 @@ async def delete_project(
 )
 async def create_project_from_source(
     body: CreateProjectFromSourceRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Create a project from a source URL and kick off analyze on Temporal.
@@ -100,6 +102,9 @@ async def create_project_from_source(
     result = await service.create_from_source(
         source_url=str(body.source_url),
         title=body.title,
+        user_id=ctx.user_id,
+        org_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
         orientation=body.orientation,
         quality=body.quality,
         voiceover=body.voiceover,
