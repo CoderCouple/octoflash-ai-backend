@@ -135,18 +135,32 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
         "--no-playlist",
         "--no-warnings",
         "--geo-bypass",
-        # When we have the user's cookies we let yt-dlp pick the
-        # player_client itself — its default is the smartest. The
-        # legacy `android,ios,web` override was a pre-cookies anti-bot
-        # workaround; on data-center IPs it now returns audio-only
-        # tracks for YouTube Shorts because Google blocks android/ios
-        # API calls from Railway egress. Without cookies we fall back
-        # to the override so unauthenticated requests still have a
-        # fighting chance.
-        *(
-            []
+        # PO Token provider — YouTube rolled out the "proof-of-origin"
+        # token requirement in 2025 and now gates every non-storyboard
+        # format behind it. Without a PO Token, even valid cookies get
+        # back only audio-only tracks. The bgutil plugin generates the
+        # token via a Node script bundled in the Docker image (see
+        # Dockerfile). On dev machines without the script, the plugin
+        # is silently absent and yt-dlp falls back to its default
+        # (which only works for some videos).
+        "--extractor-args",
+        (
+            "youtubepot-bgutilscript:server_home_path="
+            + (os.environ.get("BGUTIL_POT_PROVIDER_SERVER_HOME") or "/opt/bgutil-pot-provider/server")
+        ),
+        # Player-client selection:
+        #   * With cookies → `web,mweb,default`. These honor cookie-based
+        #     auth. yt-dlp 2025.x's tv_simply default expects a smart-TV
+        #     linked-account login that browser cookies don't satisfy
+        #     and surfaces the "Sign in to confirm you're not a bot"
+        #     challenge.
+        #   * Without cookies → `android,ios,web,tv,mweb`. Legacy
+        #     ladder; less reliable, but better than nothing.
+        "--extractor-args",
+        (
+            "youtube:player_client=web,mweb,default"
             if cookies_path
-            else ["--extractor-args", "youtube:player_client=android,ios,web,tv,mweb"]
+            else "youtube:player_client=android,ios,web,tv,mweb"
         ),
         # Format ladder — first match wins:
         #   1. mp4-only ≤720 (cheap, no ffmpeg merge)

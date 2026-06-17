@@ -61,6 +61,25 @@ RUN echo '\documentclass{article}\begin{document}$x^2$\end{document}' > /tmp/war
  && cd /tmp && latex -interaction=nonstopmode warmup.tex >/dev/null 2>&1 || true \
  && rm -f warmup.*
 
+# Node.js 20 — required by the bgutil PO Token provider's
+# `generate_once.js` script. YouTube rolled out a PO Token (proof-of-
+# origin) requirement in 2025 that gates every non-storyboard format;
+# even with valid cookies, yt-dlp gets audio-only / storyboards
+# without it. The bgutil plugin (`bgutil-ytdlp-pot-provider` pip
+# package, already in pyproject) mints tokens via a Node script —
+# this layer installs the runtime + clones+builds the script source.
+ARG BGUTIL_VERSION=1.3.1
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${BGUTIL_VERSION}.tar.gz" \
+    | tar -xz -C /opt \
+ && mv "/opt/bgutil-ytdlp-pot-provider-${BGUTIL_VERSION}" /opt/bgutil-pot-provider \
+ && cd /opt/bgutil-pot-provider/server \
+ && npm install --omit=dev \
+ && npm run build
+ENV BGUTIL_POT_PROVIDER_SERVER_HOME=/opt/bgutil-pot-provider/server
+
 RUN pip install --upgrade pip \
     && pip install poetry==$POETRY_VERSION
 
