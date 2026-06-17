@@ -134,9 +134,20 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
-        # Anti-bot workarounds for data-center IPs:
-        "--extractor-args", "youtube:player_client=android,ios,web",
         "--geo-bypass",
+        # When we have the user's cookies we let yt-dlp pick the
+        # player_client itself — its default is the smartest. The
+        # legacy `android,ios,web` override was a pre-cookies anti-bot
+        # workaround; on data-center IPs it now returns audio-only
+        # tracks for YouTube Shorts because Google blocks android/ios
+        # API calls from Railway egress. Without cookies we fall back
+        # to the override so unauthenticated requests still have a
+        # fighting chance.
+        *(
+            []
+            if cookies_path
+            else ["--extractor-args", "youtube:player_client=android,ios,web,tv,mweb"]
+        ),
         # Format ladder — first match wins:
         #   1. mp4-only ≤720 (cheap, no ffmpeg merge)
         #   2. any ≤720 (mp4 / webm / mkv — ok, we transcode later anyway)
