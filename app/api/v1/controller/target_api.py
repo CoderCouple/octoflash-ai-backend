@@ -21,6 +21,7 @@ from app.api.v1.request.target_request import CreateTargetRequest, UpdateTargetR
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.target_response import TargetResponse
 from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.common.enum.target import TargetPlatform
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
@@ -53,12 +54,12 @@ class AuthorizeResponse(BaseModel):
     response_model=BaseResponse[PaginatedResponse[TargetResponse]],
 )
 async def list_targets(
-    user_id: str | None = Query(default=None),
+    ctx: UserContext = Depends(get_user_context_or_default),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: TargetService = Depends(get_target_service),
 ):
-    items, total = await service.list(user_id, offset, limit)
+    items, total = await service.list(ctx.user_id, offset, limit)
     page = PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
     return success_response(page, "Targets fetched")
 
@@ -69,8 +70,10 @@ async def list_targets(
 )
 async def get_target(
     target_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
+    # service-side tenant filter is a follow-up.
     result = await service.get(target_id)
     return success_response(result, "Target fetched")
 
@@ -82,9 +85,10 @@ async def get_target(
 )
 async def create_target(
     body: CreateTargetRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
-    result = await service.create(body)
+    result = await service.create(body, user_id=ctx.user_id)
     return success_response(result, "Target created", 201)
 
 
@@ -95,8 +99,10 @@ async def create_target(
 async def update_target(
     target_id: str,
     body: UpdateTargetRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
+    # service-side tenant filter is a follow-up.
     result = await service.update(target_id, body)
     return success_response(result, "Target updated")
 
@@ -104,8 +110,10 @@ async def update_target(
 @router.delete("/targets/{target_id}", response_model=BaseResponse)
 async def delete_target(
     target_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: TargetService = Depends(get_target_service),
 ):
+    # service-side tenant filter is a follow-up.
     await service.delete(target_id)
     return success_response(None, "Target deleted")
 
@@ -118,6 +126,7 @@ async def delete_target(
 async def publish_target(
     target_id: str,
     body: PublishTargetRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload the project's final render for `orientation` to this target.
@@ -128,6 +137,7 @@ async def publish_target(
     token can't refresh (user must reconnect). Returns 501 if the target's
     platform has no publisher implemented yet.
     """
+    # service-side tenant filter is a follow-up.
     metadata = PublishMetadata(
         title=body.title,
         description=body.description,
@@ -150,7 +160,7 @@ async def publish_target(
 )
 async def authorize_target(
     platform: TargetPlatform,
-    user_id: str | None = Query(default=None, description="Override the request user (dev only)."),
+    ctx: UserContext = Depends(get_user_context_or_default),
 ):
     """Build the platform's OAuth authorize URL.
 
@@ -163,11 +173,9 @@ async def authorize_target(
     aren't configured — that's the single point that exposes
     "you forgot to fill in the .env values".
     """
-    from app.settings import settings  # local import — no module-level dep
-    owner = user_id or settings.default_user_id
     try:
         url, state = OAuthService().build_authorize_url(
-            platform=platform, user_id=owner,
+            platform=platform, user_id=ctx.user_id,
         )
     except OAuthNotConfiguredError as e:
         raise HTTPException(

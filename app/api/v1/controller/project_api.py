@@ -30,22 +30,35 @@ def get_project_service(db: AsyncSession = Depends(get_db)) -> ProjectService:
 @router.post("/projects", response_model=BaseResponse[ProjectResponse], status_code=201)
 async def create_project(
     body: CreateProjectRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Create a new project."""
-    result = await service.create_project(body.title, body.source_url)
+    result = await service.create_project(
+        body.title,
+        body.source_url,
+        user_id=ctx.user_id,
+        org_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
+    )
     return success_response(result, "Project created", 201)
 
 
 @router.get("/projects", response_model=BaseResponse[PaginatedResponse[ProjectResponse]])
 async def list_projects(
-    user_id: str | None = Query(default=None),
+    ctx: UserContext = Depends(get_user_context_or_default),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     service: ProjectService = Depends(get_project_service),
 ):
     """List projects."""
-    projects, total = await service.list_projects(user_id, offset, limit)
+    projects, total = await service.list_projects(
+        ctx.user_id,
+        offset,
+        limit,
+        org_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
+    )
     page = PaginatedResponse(items=projects, total=total, offset=offset, limit=limit)
     return success_response(page, "Projects fetched")
 
@@ -53,9 +66,11 @@ async def list_projects(
 @router.get("/projects/{project_id}", response_model=BaseResponse[ProjectDetailResponse])
 async def get_project(
     project_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Get project + scenes + workflow (matches frontend's project detail shape)."""
+    # service-side tenant filter is a follow-up.
     result = await service.get_project_detail(project_id)
     return success_response(result, "Project fetched")
 
@@ -64,9 +79,11 @@ async def get_project(
 async def update_project(
     project_id: str,
     body: UpdateProjectRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Rename project, update source_url, etc."""
+    # service-side tenant filter is a follow-up.
     result = await service.update_project(project_id, title=body.title, source_url=body.source_url)
     return success_response(result, "Project updated")
 
@@ -74,9 +91,11 @@ async def update_project(
 @router.delete("/projects/{project_id}", response_model=BaseResponse)
 async def delete_project(
     project_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Soft-delete a project."""
+    # service-side tenant filter is a follow-up.
     await service.delete_project(project_id)
     return success_response(None, "Project deleted")
 
@@ -128,6 +147,7 @@ async def generate_video(
         default=["portrait", "landscape"],
         description="Which orientations to render. Default: both.",
     ),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Kick off one GenerateVideoWorkflow per requested orientation.
@@ -136,6 +156,7 @@ async def generate_video(
     `final_landscape_video_url` on the Project (each with its own scene set).
     Returns 202 with a list of executions — poll each at `/executions/:id`.
     """
+    # service-side tenant filter is a follow-up.
     executions = await service.generate_video(
         project_id, max_clips=max_clips, orientations=orientations,
     )
@@ -149,6 +170,7 @@ async def preview_final_video(
         default="portrait",
         description="Which orientation's final MP4 to stream.",
     ),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: ProjectService = Depends(get_project_service),
 ):
     """Hand the FE a playable URL for the project's final MP4.
@@ -159,6 +181,7 @@ async def preview_final_video(
     records (older dev runs only) we still stream the file directly so
     nothing already in the dev DB breaks.
     """
+    # service-side tenant filter is a follow-up.
     ref = await service.get_final_video_ref(project_id, orientation=orientation)
 
     if ref.startswith("supabase://"):

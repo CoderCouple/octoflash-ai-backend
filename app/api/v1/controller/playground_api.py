@@ -18,6 +18,7 @@ from app.api.v1.response.playground_response import (
     PlaygroundPresetResponse,
     PlaygroundRenderResponse,
 )
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.service.playground_service import (
     PlaygroundRenderError,
     PlaygroundRuntimeUnavailable,
@@ -51,9 +52,11 @@ def get_playground_service() -> PlaygroundService:
     response_model=BaseResponse[list[PlaygroundPresetResponse]],
 )
 async def list_presets(
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: PlaygroundService = Depends(get_playground_service),
 ):
     """Built-in scene presets that match the frontend dropdown."""
+    # service-side tenant filter is a follow-up.
     presets = [
         PlaygroundPresetResponse(
             id=p.id,
@@ -74,9 +77,11 @@ async def list_presets(
 )
 async def render(
     body: PlaygroundRenderRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: PlaygroundService = Depends(get_playground_service),
 ):
     """Render a user-supplied Manim scene synchronously."""
+    # service-side tenant filter is a follow-up.
     try:
         result = await service.render(
             code=body.code,
@@ -115,9 +120,11 @@ async def render(
 @router.get("/playground/renders/{render_id}/output")
 async def render_output(
     render_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: PlaygroundService = Depends(get_playground_service),
 ):
     """Stream the rendered MP4 for the given render id."""
+    # service-side tenant filter is a follow-up.
     path = service.output_path(render_id)
     if not path or not path.exists():
         raise HTTPException(

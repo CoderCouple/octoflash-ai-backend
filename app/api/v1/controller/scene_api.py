@@ -17,6 +17,7 @@ from app.api.v1.request.scene_request import CreateSceneRequest, UpdateSceneRequ
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.scene_response import SceneResponse
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.db.session import get_db
 from app.service.scene_service import SceneService
 
@@ -30,9 +31,11 @@ def get_scene_service(db: AsyncSession = Depends(get_db)) -> SceneService:
 @router.get("/scenes/{scene_id}", response_model=BaseResponse[SceneResponse])
 async def get_scene(
     scene_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Fetch one scene — used by FE for per-clip status polling during render."""
+    # service-side tenant filter is a follow-up.
     result = await service.get_scene(scene_id)
     return success_response(result, "Scene fetched")
 
@@ -40,9 +43,11 @@ async def get_scene(
 @router.get("/scenes/{scene_id}/preview")
 async def preview_scene(
     scene_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Stream the clip's MP4 — what the FE's per-node `<video>` element loads."""
+    # service-side tenant filter is a follow-up.
     path = await service.get_scene_preview_path(scene_id)
     return FileResponse(
         path,
@@ -59,6 +64,7 @@ async def preview_scene(
 )
 async def regenerate_clip(
     scene_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Kick off RegenerateClipWorkflow — re-render this clip + auto-restitch project.
@@ -66,6 +72,7 @@ async def regenerate_clip(
     Returns 202 + a Job to poll. Editing the clip's prompt first via PATCH
     /scenes/{id} is the typical flow before calling this.
     """
+    # service-side tenant filter is a follow-up.
     job = await service.regenerate_clip(scene_id)
     return success_response(job, "Regenerate workflow started", 202)
 
@@ -78,9 +85,11 @@ async def regenerate_clip(
 async def add_scene(
     project_id: str,
     body: CreateSceneRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Add a scene to a project."""
+    # service-side tenant filter is a follow-up.
     result = await service.add_scene(
         project_id=project_id,
         title=body.title,
@@ -95,9 +104,11 @@ async def add_scene(
 async def update_scene(
     scene_id: str,
     body: UpdateSceneRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Update editable fields of a scene (prompt, title, duration)."""
+    # service-side tenant filter is a follow-up.
     result = await service.update_scene(
         scene_id=scene_id,
         title=body.title,
@@ -110,8 +121,10 @@ async def update_scene(
 @router.delete("/scenes/{scene_id}", response_model=BaseResponse)
 async def delete_scene(
     scene_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SceneService = Depends(get_scene_service),
 ):
     """Remove a scene from its project."""
+    # service-side tenant filter is a follow-up.
     await service.delete_scene(scene_id)
     return success_response(None, "Scene deleted")

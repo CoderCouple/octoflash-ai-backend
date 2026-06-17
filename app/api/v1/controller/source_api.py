@@ -15,6 +15,7 @@ from app.api.tags import Tags
 from app.api.v1.request.source_request import CreateSourceRequest, UpdateSourceRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.source_response import SourceDetailResponse, SourceResponse
+from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
 from app.service.source_service import SourceService
@@ -31,12 +32,12 @@ def get_source_service(db: AsyncSession = Depends(get_db)) -> SourceService:
     response_model=BaseResponse[PaginatedResponse[SourceResponse]],
 )
 async def list_sources(
-    user_id: str | None = Query(default=None),
+    ctx: UserContext = Depends(get_user_context_or_default),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     service: SourceService = Depends(get_source_service),
 ):
-    items, total = await service.list(user_id, offset, limit)
+    items, total = await service.list(ctx.user_id, offset, limit)
     page = PaginatedResponse(items=items, total=total, offset=offset, limit=limit)
     return success_response(page, "Sources fetched")
 
@@ -48,8 +49,10 @@ async def list_sources(
 async def get_source(
     source_id: str,
     video_limit: int = Query(default=50, ge=1, le=500),
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
+    # service-side tenant filter is a follow-up.
     result = await service.get_detail(source_id, video_limit=video_limit)
     return success_response(result, "Source fetched")
 
@@ -61,9 +64,10 @@ async def get_source(
 )
 async def create_source(
     body: CreateSourceRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
-    result = await service.create(body)
+    result = await service.create(body, user_id=ctx.user_id)
     return success_response(result, "Source created", 201)
 
 
@@ -74,8 +78,10 @@ async def create_source(
 async def update_source(
     source_id: str,
     body: UpdateSourceRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
+    # service-side tenant filter is a follow-up.
     result = await service.update(source_id, body)
     return success_response(result, "Source updated")
 
@@ -83,8 +89,10 @@ async def update_source(
 @router.delete("/sources/{source_id}", response_model=BaseResponse)
 async def delete_source(
     source_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
+    # service-side tenant filter is a follow-up.
     await service.delete(source_id)
     return success_response(None, "Source deleted")
 
@@ -92,8 +100,10 @@ async def delete_source(
 @router.post("/sources/{source_id}/sync", response_model=BaseResponse)
 async def sync_source(
     source_id: str,
+    ctx: UserContext = Depends(get_user_context_or_default),
     service: SourceService = Depends(get_source_service),
 ):
     """Re-fetch recent videos for the source. 501 until the YouTube fetcher lands."""
+    # service-side tenant filter is a follow-up.
     await service.sync_videos(source_id)
     return success_response(None, "Source synced")
