@@ -76,6 +76,7 @@ class NodeRunnerService:
         *,
         workflow_id: str,
         node_instance_id: str,
+        user_id: str,
         inputs_override: dict[str, Any] | None = None,
     ):
         """Kick off the Temporal workflow associated with this node's kind.
@@ -93,7 +94,8 @@ class NodeRunnerService:
         if node is None or node.workflow_id != workflow_id:
             raise EntityNotFoundError("WorkflowNodeInstance", node_instance_id)
         workflow = await self.workflow_repo.get_by_id(workflow_id)
-        if workflow is None:
+        if workflow is None or workflow.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Workflow", workflow_id)
         # type_id is FK to workflow_node_type — fetch the row to get the key
         node_type = next(

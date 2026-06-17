@@ -151,10 +151,10 @@ async def run_node(
     same `inputs` returns the in-flight execution. Different inputs → new run.
     `WorkflowExecutionResponse` is returned; FE polls `GET /executions/:id`.
     """
-    # service-side tenant filter is a follow-up.
     result = await runner.run_node(
         workflow_id=workflow_id,
         node_instance_id=node_instance_id,
+        user_id=ctx.user_id,
         inputs_override=body.inputs or None,
     )
     return success_response(result, "Node run started", 202)

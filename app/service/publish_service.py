@@ -56,9 +56,11 @@ class PublishService:
         project_id: str,
         orientation: str,
         metadata: PublishMetadata,
+        user_id: str,
     ) -> WorkflowExecutionResponse:
         target = await self.target_repo.get_by_id(target_id)
-        if target is None:
+        if target is None or target.user_id != user_id:
+            # 404 not 403 — don't leak that the row exists under a different user.
             raise EntityNotFoundError("Target", target_id)
         if target.credential_id is None:
             raise HTTPException(
@@ -92,7 +94,7 @@ class PublishService:
             )
 
         project = await self.project_repo.get_by_id(project_id)
-        if project is None:
+        if project is None or project.user_id != user_id:
             raise EntityNotFoundError("Project", project_id)
 
         video_path = self._video_path(project, orientation)

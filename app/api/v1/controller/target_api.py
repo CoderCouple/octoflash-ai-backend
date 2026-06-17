@@ -134,7 +134,6 @@ async def publish_target(
     token can't refresh (user must reconnect). Returns 501 if the target's
     platform has no publisher implemented yet.
     """
-    # service-side tenant filter is a follow-up.
     metadata = PublishMetadata(
         title=body.title,
         description=body.description,
@@ -147,6 +146,7 @@ async def publish_target(
         project_id=body.project_id,
         orientation=body.orientation,
         metadata=metadata,
+        user_id=ctx.user_id,
     )
     return success_response(execution, "Publish started", 202)
 
