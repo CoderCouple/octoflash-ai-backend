@@ -211,55 +211,51 @@ class ManimRenderService:
             except Exception as e:
                 logger.error("attempt 1 failed: %s", str(e)[:500])
 
-        # NOTE: previous "attempt 1b — fresh voice retry" removed to save cost.
-        # Empirically the fresh-voice regenerate rarely succeeded when the
-        # original voice script crashed (same model + same context → same
-        # mistakes). The cheaper strip_voiceover fallback below catches the
-        # common voiceover/ElevenLabs crashes; the fresh no-voice fallback
-        # handles deeper Manim issues.
-
-        # Attempt 2 — strip voiceover from original Claude script
-        if result is None and claude_code:
+        # Attempt 1b — fresh voice retry. The previous comment ("removed to
+        # save cost; fresh-voice regenerates rarely succeed") was true when
+        # the voice failure was a deterministic Manim bug; it's wrong when
+        # the failure is an ElevenLabs hiccup or a transient stream error.
+        # The product invariant is "every clip has its own audio" — losing
+        # voice on a clip is worse than spending one extra Claude call to
+        # try again. If 1 + 1b both fail we now raise RenderError so the
+        # workflow's per-clip gather records the failure rather than
+        # silently producing a no-voice clip the ffmpeg_concat then drops
+        # audio on (see ffmpeg_concat_service for the related concat fix).
+        if result is None and brief.voiceover:
             try:
-                logger.info("attempt 2: strip_voiceover from original")
-                no_voice = sanitize_script(strip_voiceover(claude_code))
-                result = await self._render_scene_subprocess(
-                    brief.clip_id, no_voice, brief.quality, portrait, brief.voice_id,
-                    log_sink=log_sink,
-                )
-                scene_code, method = no_voice, RenderMethod.CLAUDE_NOVOICE
-                script_file_path = save_script(brief.clip_id, no_voice)
-            except Exception as e:
-                logger.error("attempt 2 failed: %s", str(e)[:500])
-
-        # Attempt 3 — fresh no-voice script from Claude
-        if result is None:
-            try:
-                logger.info("attempt 3: fresh no-voice")
-                fresh_no_voice = await generate_episode_script(
+                logger.info("attempt 1b: fresh voice from Claude")
+                fresh_voice = await generate_episode_script(
                     transcript=brief.transcript,
                     description=brief.description,
                     duration=brief.duration,
                     title=brief.title,
                     video_id=brief.clip_id,
-                    voiceover=False,
+                    voiceover=True,
                     source_frames=brief.source_frames or None,
                     manin_prompt=brief.manim_prompt,
                     orientation=brief.orientation,
                 )
                 result = await self._render_scene_subprocess(
-                    brief.clip_id, fresh_no_voice, brief.quality, portrait, brief.voice_id,
+                    brief.clip_id, fresh_voice, brief.quality, portrait, brief.voice_id,
                     log_sink=log_sink,
                 )
-                scene_code, method = fresh_no_voice, RenderMethod.CLAUDE_NOVOICE_FRESH
-                script_file_path = save_script(brief.clip_id, fresh_no_voice)
+                scene_code, method = fresh_voice, RenderMethod.CLAUDE_VOICE_RETRY
+                script_file_path = save_script(brief.clip_id, fresh_voice)
             except Exception as e:
-                logger.error("attempt 3 failed: %s", str(e)[:500])
+                logger.error("attempt 1b failed: %s", str(e)[:500])
+
+        # No more attempts — if voice failed twice, we fail the clip rather
+        # than fall back to a no-audio render. The previous attempts 2
+        # (strip_voiceover) and 3 (fresh_no_voice) were removed because they
+        # produced clips with no audio, which broke "every clip has its own
+        # voice" as a product invariant.
 
         if result is None or scene_code is None or method is None:
             raise RenderError(
-                f"All 3 render attempts failed for clip {brief.clip_id} "
-                "— see logs for per-attempt failure details."
+                f"Voice render attempts exhausted for clip {brief.clip_id} "
+                "— see logs for per-attempt failure details. Fallback to no-voice "
+                "has been intentionally removed to preserve the every-clip-has-audio "
+                "invariant; the workflow's per-clip gather treats this as a failed clip."
             )
 
         # ── Step 3: improvement loop (only for Claude-generated scripts) ──
