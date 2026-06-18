@@ -39,7 +39,7 @@ def build_manim_prompt(
 ### Transcript
 {transcript if transcript else "(No transcript provided)"}
 
-### Frame References ({len(frames_str)} frames, 1 per second)
+### Frame References ({len(frames_str)} sampled frames)
 {frame_list}
 
 ### Video Description

@@ -249,6 +249,12 @@ class Settings(BaseSettings):
     # most recent N videos per call.
     youtube_api_key: str = ""
     channel_sync_max_videos: int = 50
+    # Source-analysis downloads do not need production-quality video; frames
+    # are only used for visual style/context, and final renders are generated
+    # from scratch. Keep this low to avoid YouTube/Railway bandwidth stalls.
+    youtube_analysis_max_height: int = 360
+    youtube_download_concurrent_fragments: int = 4
+    youtube_analysis_frame_count: int = 12
 
     # Manim
     manim_quality_preview: str = "low_quality"

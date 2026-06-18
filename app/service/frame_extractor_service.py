@@ -52,11 +52,16 @@ def extract_frames(
     video_path: Path,
     fps: float = 1.0,
     quality: int = 2,
+    max_frames: int | None = None,
 ) -> ExtractedFrames:
-    """Extract `fps` frames per second from `video_path` for `project_id`.
+    """Extract frames from `video_path` for `project_id`.
 
     Output: `<storage_root>/projects/{project_id}/frames/frame_NNNN.jpg`.
     Returns the frames directory + sorted list of frame paths + duration.
+
+    When `max_frames` is set, frames are sampled evenly across the video
+    instead of extracting at a fixed FPS. This is the right mode for source
+    analysis, where the vision prompt samples only a handful of frames anyway.
     """
     frames_dir = _get_frames_dir(project_id)
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -65,15 +70,34 @@ def extract_frames(
     for stale in frames_dir.glob("frame_*.jpg"):
         stale.unlink()
 
+    duration: float | None
+    try:
+        duration = get_video_duration(video_path)
+    except FrameExtractionError as e:
+        logger.warning("get_video_duration failed before extraction (%s)", e)
+        duration = None
+
+    vf = f"fps={fps}"
+    frame_limit: list[str] = []
+    if max_frames and max_frames > 0:
+        effective_duration = duration or float(max_frames)
+        interval = max(0.5, effective_duration / max_frames)
+        vf = f"fps=1/{interval:.2f}"
+        frame_limit = ["-frames:v", str(max_frames)]
+
     cmd = [
         "ffmpeg",
         "-i", str(video_path),
-        "-vf", f"fps={fps}",
+        "-vf", vf,
+        *frame_limit,
         "-q:v", str(quality),
         str(frames_dir / "frame_%04d.jpg"),
         "-y",
     ]
-    logger.info("extract_frames: %s fps=%s -> %s", video_path, fps, frames_dir)
+    logger.info(
+        "extract_frames: %s vf=%s max_frames=%s -> %s",
+        video_path, vf, max_frames, frames_dir,
+    )
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if result.returncode != 0:
         raise FrameExtractionError(f"ffmpeg failed: {result.stderr.strip()[-500:]}")
@@ -82,11 +106,8 @@ def extract_frames(
     if not frame_paths:
         raise FrameExtractionError("ffmpeg produced no frames")
 
-    # Duration is useful for the prompt builder and for clip-planning later.
-    try:
-        duration = get_video_duration(video_path)
-    except FrameExtractionError as e:
-        logger.warning("get_video_duration failed (%s) — falling back to frame count", e)
+    if duration is None:
+        logger.warning("get_video_duration unavailable — falling back to frame count")
         duration = len(frame_paths) / fps if fps > 0 else None
 
     return ExtractedFrames(

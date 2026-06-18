@@ -20,6 +20,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from app.settings import settings
@@ -38,6 +39,35 @@ class TranscriptResult:
 
 class TranscriptError(RuntimeError):
     """Both captions + Whisper failed (or the URL is unrecognized)."""
+
+
+def _bgutil_server_home() -> str:
+    return os.environ.get("BGUTIL_POT_PROVIDER_SERVER_HOME") or "/opt/bgutil-pot-provider/server"
+
+
+def _youtube_extractor_args(cookies_path: Path | None = None) -> dict[str, dict[str, list[str]]]:
+    """yt-dlp Python API extractor args matching the CLI used by analyze downloads."""
+    return {
+        "youtubepot-bgutilscript": {"server_home": [_bgutil_server_home()]},
+        "youtube": {
+            "player_client": (
+                ["web", "mweb", "default"]
+                if cookies_path
+                else ["android", "ios", "web", "tv", "mweb"]
+            )
+        },
+    }
+
+
+def _youtube_common_opts(cookies_path: Path | None = None) -> dict:
+    opts: dict = {
+        "extractor_args": _youtube_extractor_args(cookies_path),
+        "noplaylist": True,
+        "no_warnings": True,
+    }
+    if cookies_path:
+        opts["cookiefile"] = str(cookies_path)
+    return opts
 
 
 # ─── URL → video id ────────────────────────────────────────────────────────────
@@ -94,7 +124,11 @@ def _parse_vtt(vtt_text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _via_captions(video_url: str, languages: list[str] | None = None) -> TranscriptResult:
+def _via_captions(
+    video_url: str,
+    languages: list[str] | None = None,
+    cookies_path: Path | None = None,
+) -> TranscriptResult:
     """Pull captions via yt-dlp's subtitle download.
 
     More reliable than youtube-transcript-api, which routinely gets throttled
@@ -107,8 +141,8 @@ def _via_captions(video_url: str, languages: list[str] | None = None) -> Transcr
     with tempfile.TemporaryDirectory(prefix="octoflash-captions-") as tmpdir:
         outtmpl = os.path.join(tmpdir, "video.%(ext)s")
         opts = {
+            **_youtube_common_opts(cookies_path),
             "quiet": True,
-            "no_warnings": True,
             "skip_download": True,
             "writesubtitles": True,
             "writeautomaticsub": True,
@@ -148,18 +182,21 @@ def _via_captions(video_url: str, languages: list[str] | None = None) -> Transcr
 # ─── Whisper fallback ──────────────────────────────────────────────────────────
 
 
-def _download_audio(video_url: str, target_dir: str) -> str:
+def _download_audio(
+    video_url: str,
+    target_dir: str,
+    cookies_path: Path | None = None,
+) -> str:
     """yt-dlp → bestaudio → m4a in target_dir. Returns the local path."""
     import yt_dlp  # type: ignore
 
     outtmpl = os.path.join(target_dir, "audio.%(ext)s")
     opts = {
+        **_youtube_common_opts(cookies_path),
         "quiet": True,
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
         # Don't run any post-processors — faster-whisper reads the m4a directly.
-        "noplaylist": True,
-        "no_warnings": True,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
@@ -174,11 +211,11 @@ def _download_audio(video_url: str, target_dir: str) -> str:
     return filename
 
 
-def _via_whisper(video_url: str) -> TranscriptResult:
+def _via_whisper(video_url: str, cookies_path: Path | None = None) -> TranscriptResult:
     from faster_whisper import WhisperModel  # type: ignore
 
     with tempfile.TemporaryDirectory(prefix="octoflash-whisper-") as tmpdir:
-        audio_path = _download_audio(video_url, tmpdir)
+        audio_path = _download_audio(video_url, tmpdir, cookies_path)
 
         # Load once per call — model can be 1-3 GB; cache via lru would help but
         # workers should hold the model. For Phase 3 we accept the load cost on
@@ -209,10 +246,14 @@ def _via_whisper(video_url: str) -> TranscriptResult:
 
 
 class TranscriptService:
-    def fetch(self, video_url: str) -> TranscriptResult:
+    def fetch(
+        self,
+        video_url: str,
+        cookies_path: Path | None = None,
+    ) -> TranscriptResult:
         """Try captions (yt-dlp); on failure, fall back to Whisper. Returns text + provenance."""
         try:
-            return _via_captions(video_url)
+            return _via_captions(video_url, cookies_path=cookies_path)
         except TranscriptError as e:
             logger.info(
                 "Captions unavailable for %s (%s); falling back to Whisper",
@@ -222,4 +263,4 @@ class TranscriptService:
         # If we got here, captions failed. Whisper is heavy — log loudly so
         # the operator knows where time is going.
         logger.warning("Whisper fallback engaging for %s — this can take minutes", video_url)
-        return _via_whisper(video_url)
+        return _via_whisper(video_url, cookies_path)

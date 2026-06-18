@@ -12,6 +12,7 @@ Set generous activity timeouts in the workflow.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,6 +107,21 @@ def _user_youtube_cookies_file(user_id: str | None, target_dir: Path) -> Path | 
     return cookies_path
 
 
+def _bgutil_server_home() -> str:
+    return os.environ.get("BGUTIL_POT_PROVIDER_SERVER_HOME") or "/opt/bgutil-pot-provider/server"
+
+
+def _warn_if_bgutil_unavailable() -> None:
+    server_home = Path(_bgutil_server_home())
+    script = server_home / "build" / "generate_once.js"
+    if not script.exists():
+        activity.logger.warning(
+            "bgutil PO-token script not found at %s. YouTube may return bot checks/403s. "
+            "Build the provider server or set BGUTIL_POT_PROVIDER_SERVER_HOME.",
+            script,
+        )
+
+
 def _download_video(url: str, project_id: str, user_id: str | None = None) -> Path:
     """yt-dlp the source video into storage/projects/<project_id>/source.<ext>.
 
@@ -128,13 +144,18 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
     target_dir.mkdir(parents=True, exist_ok=True)
 
     cookies_path = _user_youtube_cookies_file(user_id, target_dir)
+    _warn_if_bgutil_unavailable()
 
     outtmpl = str(target_dir / "source.%(ext)s")
+    max_height = max(144, int(settings.youtube_analysis_max_height or 360))
+    concurrent_fragments = max(1, int(settings.youtube_download_concurrent_fragments or 1))
     cmd = [
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
         "--geo-bypass",
+        "--concurrent-fragments",
+        str(concurrent_fragments),
         # PO Token provider — YouTube rolled out the "proof-of-origin"
         # token requirement in 2025 and now gates every non-storyboard
         # format behind it. Without a PO Token, even valid cookies get
@@ -144,10 +165,7 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
         # is silently absent and yt-dlp falls back to its default
         # (which only works for some videos).
         "--extractor-args",
-        (
-            "youtubepot-bgutilscript:server_home_path="
-            + (os.environ.get("BGUTIL_POT_PROVIDER_SERVER_HOME") or "/opt/bgutil-pot-provider/server")
-        ),
+        "youtubepot-bgutilscript:server_home=" + _bgutil_server_home(),
         # Player-client selection:
         #   * With cookies → `web,mweb,default`. These honor cookie-based
         #     auth. yt-dlp 2025.x's tv_simply default expects a smart-TV
@@ -163,14 +181,19 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
             else "youtube:player_client=android,ios,web,tv,mweb"
         ),
         # Format ladder — first match wins:
-        #   1. mp4-only ≤720 (cheap, no ffmpeg merge)
-        #   2. any ≤720 (mp4 / webm / mkv — ok, we transcode later anyway)
+        #   1. mp4-only <= configured analysis height (cheap, no ffmpeg merge)
+        #   2. any <= configured analysis height (mp4 / webm / mkv is fine)
         #   3. bestvideo + bestaudio merge (Shorts often only ship DASH /
         #      separate streams; this catches them)
         #   4. `best` / `worst` as last-ditch fallbacks so we don't 404
         #      on weird format manifests
         "-f",
-        "best[ext=mp4][height<=720]/best[height<=720]/bestvideo+bestaudio/best/worst",
+        (
+            f"best[ext=mp4][height<={max_height}]/"
+            f"best[height<={max_height}]/"
+            f"worst[height<={max_height}]/"
+            "worst"
+        ),
         "-o", outtmpl,
         url,
     ]
@@ -232,17 +255,31 @@ async def analyze_source_activity(payload: AnalyzeSourceInput) -> AnalyzeSourceO
     )
     activity.heartbeat("downloaded")
 
-    # 2. Frames @ 1 fps
+    # 2. Sparse, evenly-sampled frames. The vision describer samples only 6
+    # frames, so extracting thousands of 1-fps frames just creates avoidable
+    # ffmpeg, disk, and upload pressure for long source videos.
     extracted = await asyncio.to_thread(
-        extract_frames, payload.project_id, video_path, 1.0, 2,
+        extract_frames,
+        payload.project_id,
+        video_path,
+        1.0,
+        2,
+        settings.youtube_analysis_frame_count,
     )
     activity.heartbeat("frames_extracted")
     activity.logger.info(
         "frames=%d duration=%.1fs", len(extracted.frame_paths), extracted.duration_seconds or 0.0,
     )
 
-    # 3. Transcript
-    transcript = await asyncio.to_thread(TranscriptService().fetch, payload.source_url)
+    # 3. Transcript. Reuse the same cookies/PO-token path as the video
+    # download; subtitle and audio endpoints are protected by the same
+    # YouTube bot checks.
+    cookies_path = video_path.parent / "yt_cookies.txt"
+    transcript = await asyncio.to_thread(
+        TranscriptService().fetch,
+        payload.source_url,
+        cookies_path if cookies_path.exists() else None,
+    )
     activity.heartbeat("transcript_fetched")
 
     # 4. Describer (Claude vision)
