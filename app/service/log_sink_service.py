@@ -62,7 +62,7 @@ class LogSink:
         self._conn = psycopg.connect(
             settings.sync_database_url.replace(
                 "postgresql+psycopg://", "postgresql://"
-            ),
+            ).replace(":5432/", ":6543/"),
             autocommit=True,
             connect_timeout=10,
         )

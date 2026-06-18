@@ -212,7 +212,11 @@ def _user_youtube_cookies_file(user_id: str | None, target_dir: Path) -> Path | 
         activity.logger.warning("psycopg / secret_crypto import failed; skipping cookies")
         return None
 
-    dsn = settings.sync_database_url.replace("postgresql+psycopg://", "postgresql://")
+    # Route through Supabase's transaction-mode pooler (:6543) to avoid
+    # the 15-client session-mode limit when many clips run in parallel.
+    dsn = settings.sync_database_url.replace(
+        "postgresql+psycopg://", "postgresql://"
+    ).replace(":5432/", ":6543/")
     try:
         with psycopg.connect(dsn, connect_timeout=10) as conn:
             cur = conn.cursor()

@@ -233,14 +233,24 @@ async def generate_clip_activity(payload: GenerateClipInput) -> GenerateClipOutp
 # connection per call rather than dragging in the AsyncSession factory.
 
 def _open_sync_db():
+    """Short-lived psycopg connection for scene_render + LogSink writes.
+
+    Routed through Supabase's *transaction-mode* pooler (port 6543) so
+    fanning out N clips in parallel doesn't blow past the 15-client
+    session-mode limit. CLAUDE.md calls this out explicitly: the BE
+    connects to session mode (5432) and DDL bypasses PgBouncer via
+    DATABASE_URL_DIRECT, but per-query worker ops should hit 6543 where
+    the pooler can recycle connections quickly. The earlier impl used
+    sync_database_url verbatim, which lands on 5432 and caused
+    EMAXCONNSESSION after 3 concurrent generates (~13 clips fanning
+    out, each opening a persistent LogSink connection).
+    """
     import psycopg
-    return psycopg.connect(
-        settings.sync_database_url.replace(
-            "postgresql+psycopg://", "postgresql://"
-        ),
-        autocommit=True,
-        connect_timeout=10,
-    )
+
+    dsn = settings.sync_database_url.replace(
+        "postgresql+psycopg://", "postgresql://"
+    ).replace(":5432/", ":6543/")
+    return psycopg.connect(dsn, autocommit=True, connect_timeout=10)
 
 
 def _start_scene_render(
