@@ -50,6 +50,12 @@ _ANALYZE_RETRY = RetryPolicy(
     maximum_interval=timedelta(minutes=2),
     maximum_attempts=3,
     backoff_coefficient=2.0,
+    non_retryable_error_types=[
+        "YouTube.rate_limited",
+        "YouTube.login_required",
+        "YouTube.bot_check",
+        "YouTube.server_attempt_limit",
+    ],
 )
 _DB_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1),

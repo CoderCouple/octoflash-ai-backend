@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     youtube_analysis_max_height: int = 360
     youtube_download_concurrent_fragments: int = 4
     youtube_analysis_frame_count: int = 12
+    youtube_server_attempts_per_user_per_day: int = 5
+    youtube_video_block_cooldown_minutes: int = 60
+    youtube_user_block_cooldown_minutes: int = 24 * 60
+    youtube_local_ingest_max_frames: int = 24
+    youtube_local_ingest_max_frame_bytes: int = 2_000_000
 
     # Manim
     manim_quality_preview: str = "low_quality"

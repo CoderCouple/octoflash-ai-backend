@@ -32,3 +32,4 @@ from app.model.workflow_node_instance_model import WorkflowNodeInstance  # noqa:
 from app.model.workflow_node_prop_model import WorkflowNodeProp  # noqa: F401
 from app.model.workflow_node_type_model import WorkflowNodeType  # noqa: F401
 from app.model.workspace_model import Workspace  # noqa: F401
+from app.model.youtube_ingest_guard_model import YoutubeIngestGuard  # noqa: F401

@@ -15,16 +15,21 @@ import asyncio
 import os
 import subprocess
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 import app.model  # noqa: F401
+from app.db.engine import get_async_engine
+from app.db.repository.youtube_ingest_guard_repository import YoutubeIngestGuardRepository
 from app.service.describer_service import DescriberService
 from app.service.frame_extractor_service import extract_frames
 from app.service.prompt_builder_service import PromptBuilderService
 from app.service.source_fetcher_service import SourceType, classify_source_url
-from app.service.transcript_service import TranscriptService
+from app.service.transcript_service import TranscriptService, extract_video_id
 from app.settings import settings
 
 
@@ -50,6 +55,140 @@ class AnalyzeSourceOutput:
     frame_count: int
     title_hint: str  # first non-empty line of description, capped at 80 chars
     extra: dict[str, str] = field(default_factory=dict)
+
+
+class YouTubeIngestBlockedError(RuntimeError):
+    reason = "youtube_blocked"
+
+
+class YouTubeRateLimitedError(YouTubeIngestBlockedError):
+    reason = "rate_limited"
+
+
+class YouTubeLoginRequiredError(YouTubeIngestBlockedError):
+    reason = "login_required"
+
+
+class YouTubeBotCheckError(YouTubeIngestBlockedError):
+    reason = "bot_check"
+
+
+def _session_factory() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(
+        bind=get_async_engine(),
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+
+def _raise_non_retryable(reason: str, message: str) -> None:
+    raise ApplicationError(message, type=f"YouTube.{reason}", non_retryable=True)
+
+
+def _video_id_or_none(url: str) -> str | None:
+    try:
+        return extract_video_id(url)
+    except ValueError:
+        return None
+
+
+def _classify_youtube_stderr(stderr: str) -> YouTubeIngestBlockedError | None:
+    lowered = stderr.lower()
+    if "http error 429" in lowered or "too many requests" in lowered:
+        return YouTubeRateLimitedError("YouTube rate-limited this worker IP.")
+    if (
+        "login_required" in lowered
+        or "cookies are no longer valid" in lowered
+        or "sign in to confirm" in lowered
+        or "authentication" in lowered
+    ):
+        return YouTubeLoginRequiredError(
+            "YouTube rejected the current session. Re-sync cookies before retrying."
+        )
+    if "bot" in lowered or "unusual traffic" in lowered:
+        return YouTubeBotCheckError("YouTube served an anti-bot challenge.")
+    return None
+
+
+async def _enforce_ingest_guard(user_id: str | None, source_url: str) -> str | None:
+    """Fail fast when a known YouTube block/cooldown is active."""
+    video_id = _video_id_or_none(source_url)
+    factory = _session_factory()
+    async with factory() as session:
+        repo = YoutubeIngestGuardRepository(session)
+
+        if video_id:
+            video_guard = await repo.get_active("video", video_id)
+            if video_guard is not None:
+                _raise_non_retryable(
+                    video_guard.reason,
+                    (
+                        f"YouTube ingest for video {video_id} is cooling down until "
+                        f"{video_guard.blocked_until}. Use Local Ingest or retry later."
+                    ),
+                )
+
+        if user_id:
+            user_guard = await repo.get_active("user", user_id)
+            if user_guard is not None:
+                _raise_non_retryable(
+                    user_guard.reason,
+                    (
+                        f"YouTube server ingest is paused for this user until "
+                        f"{user_guard.blocked_until}. Use Local Ingest or re-sync cookies."
+                    ),
+                )
+
+            limit = max(1, settings.youtube_server_attempts_per_user_per_day)
+            attempt = await repo.record_user_attempt(
+                user_id=user_id,
+                limit=limit,
+                window=timedelta(days=1),
+            )
+            await session.commit()
+            if attempt.blocked_until is not None and attempt.attempts_count > limit:
+                _raise_non_retryable(
+                    "server_attempt_limit",
+                    (
+                        "Daily server-side YouTube ingest limit reached for this user. "
+                        "Use Local Ingest or retry tomorrow."
+                    ),
+                )
+
+    return video_id
+
+
+async def _record_youtube_block(
+    *,
+    user_id: str | None,
+    video_id: str | None,
+    source_url: str,
+    exc: YouTubeIngestBlockedError,
+) -> None:
+    factory = _session_factory()
+    async with factory() as session:
+        repo = YoutubeIngestGuardRepository(session)
+        if video_id:
+            await repo.record_block(
+                scope="video",
+                key=video_id,
+                reason=exc.reason,
+                cooldown=timedelta(minutes=settings.youtube_video_block_cooldown_minutes),
+                source_url=source_url,
+                detail=str(exc),
+            )
+        if user_id and isinstance(exc, YouTubeLoginRequiredError | YouTubeBotCheckError):
+            await repo.record_block(
+                scope="user",
+                key=user_id,
+                reason=exc.reason,
+                cooldown=timedelta(minutes=settings.youtube_user_block_cooldown_minutes),
+                source_url=source_url,
+                detail=str(exc),
+            )
+        await session.commit()
 
 
 def _user_youtube_cookies_file(user_id: str | None, target_dir: Path) -> Path | None:
@@ -219,6 +358,8 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
             "yt-dlp FAILED (rc=%d) for url=%s\n--- stderr head ---\n%s\n--- stderr tail ---\n%s",
             proc.returncode, url, stderr_head, stderr_tail,
         )
+        if blocked := _classify_youtube_stderr(stderr_full):
+            raise blocked
         raise RuntimeError(
             f"yt-dlp failed (rc={proc.returncode}). Last stderr: {stderr_tail[-400:]}"
         )
@@ -259,10 +400,21 @@ async def analyze_source_activity(payload: AnalyzeSourceInput) -> AnalyzeSourceO
             f"analyze_source activity currently handles YouTube only; got {source_type.value}"
         )
 
+    video_id = await _enforce_ingest_guard(payload.user_id, payload.source_url)
+
     # 1. Download
-    video_path = await asyncio.to_thread(
-        _download_video, payload.source_url, payload.project_id, payload.user_id,
-    )
+    try:
+        video_path = await asyncio.to_thread(
+            _download_video, payload.source_url, payload.project_id, payload.user_id,
+        )
+    except YouTubeIngestBlockedError as exc:
+        await _record_youtube_block(
+            user_id=payload.user_id,
+            video_id=video_id,
+            source_url=payload.source_url,
+            exc=exc,
+        )
+        _raise_non_retryable(exc.reason, str(exc))
     activity.heartbeat("downloaded")
 
     # 2. Sparse, evenly-sampled frames. The vision describer samples only 6
@@ -285,11 +437,22 @@ async def analyze_source_activity(payload: AnalyzeSourceInput) -> AnalyzeSourceO
     # download; subtitle and audio endpoints are protected by the same
     # YouTube bot checks.
     cookies_path = video_path.parent / "yt_cookies.txt"
-    transcript = await asyncio.to_thread(
-        TranscriptService().fetch,
-        payload.source_url,
-        cookies_path if cookies_path.exists() else None,
-    )
+    try:
+        transcript = await asyncio.to_thread(
+            TranscriptService().fetch,
+            payload.source_url,
+            cookies_path if cookies_path.exists() else None,
+        )
+    except Exception as exc:
+        if blocked := _classify_youtube_stderr(str(exc)):
+            await _record_youtube_block(
+                user_id=payload.user_id,
+                video_id=video_id,
+                source_url=payload.source_url,
+                exc=blocked,
+            )
+            _raise_non_retryable(blocked.reason, str(blocked))
+        raise
     activity.heartbeat("transcript_fetched")
 
     # 4. Describer (Claude vision)

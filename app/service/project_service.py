@@ -1,20 +1,30 @@
+import base64
+import binascii
 from datetime import datetime, timezone
-
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from pathlib import Path
 
+from fastapi import HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.request.local_ingest_request import (
+    CreateProjectFromLocalIngestRequest,
+    LocalIngestFrameRequest,
+)
 from app.api.v1.response.from_source_response import CreateProjectFromSourceResponse
-from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.project_response import ProjectDetailResponse, ProjectResponse
 from app.api.v1.response.scene_response import SceneResponse
+from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.common.enum.execution import WorkflowKind
+from app.common.enum.scene import ProjectStatus
 from app.common.exceptions import EntityNotFoundError
 from app.db.repository.project_repository import ProjectRepository
 from app.db.repository.scene_repository import SceneRepository
 from app.db.repository.workflow_repository import WorkflowRepository
 from app.model.project_model import Project
+from app.service.describer_service import DescriberService
+from app.service.prompt_builder_service import PromptBuilderService
 from app.service.source_fetcher_service import (
+    SourceType,
     UnsupportedSourceError,
     classify_source_url,
 )
@@ -223,25 +233,32 @@ class ProjectService:
         try:
             source_type = classify_source_url(source_url)
         except UnsupportedSourceError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
         # 1. Project shell. User-chosen render options are stamped here
         # so the first Generate doesn't need a follow-up PATCH; everything
         # is still editable via PATCH /projects/{id} later.
-        project_kwargs: dict = dict(
-            title=title or f"From {source_type.value}",
-            source_url=source_url,
-            user_id=user_id or settings.default_user_id,
-            org_id=org_id,
-            workspace_id=workspace_id,
-        )
-        if orientation is not None:       project_kwargs["orientation"] = orientation
-        if quality is not None:           project_kwargs["quality"] = quality
-        if voiceover is not None:         project_kwargs["voiceover"] = voiceover
-        if voice_id is not None:          project_kwargs["voice_id"] = voice_id
-        if voice_gender is not None:      project_kwargs["voice_gender"] = voice_gender
-        if voice_accent is not None:      project_kwargs["voice_accent"] = voice_accent
-        if target_duration is not None:   project_kwargs["target_duration"] = target_duration
+        project_kwargs: dict = {
+            "title": title or f"From {source_type.value}",
+            "source_url": source_url,
+            "user_id": user_id or settings.default_user_id,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+        }
+        if orientation is not None:
+            project_kwargs["orientation"] = orientation
+        if quality is not None:
+            project_kwargs["quality"] = quality
+        if voiceover is not None:
+            project_kwargs["voiceover"] = voiceover
+        if voice_id is not None:
+            project_kwargs["voice_id"] = voice_id
+        if voice_gender is not None:
+            project_kwargs["voice_gender"] = voice_gender
+        if voice_accent is not None:
+            project_kwargs["voice_accent"] = voice_accent
+        if target_duration is not None:
+            project_kwargs["target_duration"] = target_duration
         project = Project(**project_kwargs)
         project = await self.project_repo.create(project)
         project_resp = ProjectResponse.model_validate(project)
@@ -289,6 +306,184 @@ class ProjectService:
             scenes=[],
             execution=execution_resp,
         )
+
+    async def create_from_local_ingest(
+        self,
+        body: CreateProjectFromLocalIngestRequest,
+        user_id: str | None = None,
+        org_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> ProjectResponse:
+        """Create an analyzed Project from browser-side source capture.
+
+        This is the primary YouTube path for production: the browser extension
+        captures transcript + sampled frames while the user is already playing
+        the video, and the backend only performs description/prompt synthesis.
+        """
+        source_url = str(body.source_url)
+        try:
+            source_type = classify_source_url(source_url)
+        except UnsupportedSourceError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        if source_type not in (SourceType.YOUTUBE_LONG, SourceType.YOUTUBE_SHORT):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Local ingest is currently supported for YouTube sources only.",
+            )
+
+        owner = user_id or settings.default_user_id
+        project_kwargs: dict = {
+            "title": body.title or "From local YouTube ingest",
+            "source_url": source_url,
+            "user_id": owner,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "status": ProjectStatus.ANALYZING,
+        }
+        if body.orientation is not None:
+            project_kwargs["orientation"] = body.orientation
+        if body.quality is not None:
+            project_kwargs["quality"] = body.quality
+        if body.voiceover is not None:
+            project_kwargs["voiceover"] = body.voiceover
+        if body.voice_id is not None:
+            project_kwargs["voice_id"] = body.voice_id
+        if body.voice_gender is not None:
+            project_kwargs["voice_gender"] = body.voice_gender
+        if body.voice_accent is not None:
+            project_kwargs["voice_accent"] = body.voice_accent
+        if body.target_duration is not None:
+            project_kwargs["target_duration"] = body.target_duration
+
+        project = await self.project_repo.create(Project(**project_kwargs))
+
+        storage_root = Path(settings.local_storage_path or "storage").resolve()
+        frames_dir = storage_root / "projects" / project.id / "frames"
+        relative_frame_paths = self._write_local_ingest_frames(
+            project_id=project.id,
+            frames_dir=frames_dir,
+            storage_root=storage_root,
+            frames=body.frames,
+        )
+
+        # Describer + prompt-builder run synchronously on the request path.
+        # If either fails (LLM outage, malformed frames, timeout) the project
+        # row would otherwise sit in ANALYZING forever and the FE would poll
+        # a dead state. Wrap the analyze-side work so we can flip the row to
+        # FAILED before re-raising, and return a proper failure status to
+        # the caller instead of 201 over a half-baked project.
+        duration = body.source_duration or body.target_duration or 60.0
+        try:
+            description = body.description
+            if description is None:
+                description = await DescriberService().describe(
+                    relative_frame_paths,
+                    body.transcript,
+                    duration,
+                )
+
+            manim_prompt = PromptBuilderService().build(
+                body.transcript,
+                relative_frame_paths,
+                description,
+                duration,
+            )
+
+            project.transcript = body.transcript
+            project.description = description
+            project.manim_prompt = manim_prompt
+            project.source_duration = duration
+            project.frames_dir = str(frames_dir)
+            project.status = ProjectStatus.ANALYZED
+            project.updated_at = datetime.now(timezone.utc)
+            await self.project_repo.update(project)
+            return ProjectResponse.model_validate(project)
+        except Exception as exc:
+            # Best-effort: don't mask the original failure if the status
+            # flip also fails.
+            try:
+                project.status = ProjectStatus.FAILED
+                project.updated_at = datetime.now(timezone.utc)
+                await self.project_repo.update(project)
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Local ingest analyze failed: {exc}",
+            ) from exc
+
+    def _write_local_ingest_frames(
+        self,
+        *,
+        project_id: str,
+        frames_dir: Path,
+        storage_root: Path,
+        frames: list[LocalIngestFrameRequest],
+    ) -> list[str]:
+        max_frames = max(0, settings.youtube_local_ingest_max_frames)
+        frames_to_write = frames[:max_frames]
+        if not frames_to_write:
+            return []
+
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        for stale in frames_dir.glob("frame_*.jpg"):
+            stale.unlink()
+
+        relative_paths: list[str] = []
+        for index, frame in enumerate(frames_to_write, 1):
+            image_bytes = self._decode_local_ingest_frame(frame, index)
+            frame_path = frames_dir / f"frame_{index:04d}.jpg"
+            frame_path.write_bytes(image_bytes)
+            relative_paths.append(str(frame_path.relative_to(storage_root)))
+
+        return relative_paths
+
+    def _decode_local_ingest_frame(
+        self,
+        frame: LocalIngestFrameRequest,
+        index: int,
+    ) -> bytes:
+        payload = frame.image_base64
+        if frame.data_url:
+            header, separator, encoded = frame.data_url.partition(",")
+            media_type = header.removeprefix("data:").split(";", 1)[0].lower()
+            if separator != "," or "base64" not in header.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Frame {index} must be a base64 data URL.",
+                )
+            if media_type not in {"image/jpeg", "image/jpg"}:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Frame {index} must be JPEG; got {media_type or 'unknown'}.",
+                )
+            payload = encoded
+
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Frame {index} is missing image data.",
+            )
+
+        try:
+            image_bytes = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Frame {index} is not valid base64.",
+            ) from e
+
+        if len(image_bytes) > settings.youtube_local_ingest_max_frame_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Frame {index} exceeds the configured frame size limit.",
+            )
+        if not image_bytes.startswith(b"\xff\xd8"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Frame {index} must be JPEG-encoded.",
+            )
+        return image_bytes
 
     async def generate_video(
         self,

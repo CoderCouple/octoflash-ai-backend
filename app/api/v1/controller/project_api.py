@@ -6,19 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.service.supabase_storage_service import get_storage_service
-
 from app.api.tags import Tags
 from app.api.v1.request.from_source_request import CreateProjectFromSourceRequest
+from app.api.v1.request.local_ingest_request import CreateProjectFromLocalIngestRequest
 from app.api.v1.request.project_request import CreateProjectRequest, UpdateProjectRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
 from app.api.v1.response.from_source_response import CreateProjectFromSourceResponse
-from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.api.v1.response.project_response import ProjectDetailResponse, ProjectResponse
+from app.api.v1.response.workflow_execution_response import WorkflowExecutionResponse
 from app.common.auth.auth import UserContext, get_user_context_or_default
 from app.common.pagination import PaginatedResponse
 from app.db.session import get_db
 from app.service.project_service import ProjectService
+from app.service.supabase_storage_service import get_storage_service
 
 router = APIRouter(tags=[Tags.Project])
 
@@ -135,6 +135,31 @@ async def create_project_from_source(
         target_duration=body.target_duration,
     )
     return success_response(result, "Analyze workflow started", 202)
+
+
+@router.post(
+    "/projects/from-local-ingest",
+    response_model=BaseResponse[ProjectResponse],
+    status_code=201,
+)
+async def create_project_from_local_ingest(
+    body: CreateProjectFromLocalIngestRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
+    service: ProjectService = Depends(get_project_service),
+):
+    """Create an analyzed project from browser-side YouTube ingest.
+
+    Preferred YouTube path for production: the extension sends transcript and
+    sampled JPEG frames captured in the user's browser session, so the backend
+    does not have to download the video from a data-center IP.
+    """
+    result = await service.create_from_local_ingest(
+        body,
+        user_id=ctx.user_id,
+        org_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
+    )
+    return success_response(result, "Project created from local ingest", 201)
 
 
 @router.post(
