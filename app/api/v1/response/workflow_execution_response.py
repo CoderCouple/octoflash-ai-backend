@@ -58,6 +58,10 @@ class WorkflowExecutionResponse(BaseModel):
 
     id: str
     workflow_id: str
+    # Surface the parent project so callers can navigate to /projects/{id}
+    # after kicking a workflow. Nullable for executions tied to a workflow
+    # whose project linkage isn't set (rare; safe default).
+    project_id: str | None = None
     user_id: str
     kind: WorkflowKind
     trigger_kind: ExecutionTrigger

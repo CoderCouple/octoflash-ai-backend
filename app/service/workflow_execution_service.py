@@ -197,9 +197,15 @@ class WorkflowExecutionService:
                 ExecutionStatus.TIMED_OUT: 100,
             }.get(execution.status, 0)
 
+        # Resolve the parent project so the FE can navigate to it after
+        # we hand back the execution. Cheap single-row lookup.
+        workflow = await self.workflow_repo.get_by_id(execution.workflow_id)
+        project_id = workflow.project_id if workflow else None
+
         return WorkflowExecutionResponse(
             id=execution.id,
             workflow_id=execution.workflow_id,
+            project_id=project_id,
             user_id=execution.user_id,
             kind=execution.kind,
             trigger_kind=execution.trigger_kind,
