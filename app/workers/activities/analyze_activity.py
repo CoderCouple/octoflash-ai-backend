@@ -152,7 +152,12 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--no-warnings",
+        # Verbose so the bgutil plugin's discovery/POT-generation log
+        # lines actually surface. `--no-warnings` swallows them. The
+        # full extractor debug output is noisy but cheap (one analyze
+        # per project) and load-bearing for diagnosing the 2025 PO
+        # Token gating.
+        "-v",
         "--geo-bypass",
         "--concurrent-fragments",
         str(concurrent_fragments),
