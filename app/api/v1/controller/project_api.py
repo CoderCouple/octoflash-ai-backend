@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tags import Tags
 from app.api.v1.request.from_source_request import CreateProjectFromSourceRequest
+from app.api.v1.request.from_text_request import CreateProjectFromTextRequest
 from app.api.v1.request.local_ingest_request import CreateProjectFromLocalIngestRequest
 from app.api.v1.request.project_request import CreateProjectRequest, UpdateProjectRequest
 from app.api.v1.response.base_response import BaseResponse, success_response
@@ -160,6 +161,37 @@ async def create_project_from_local_ingest(
         workspace_id=ctx.workspace_id,
     )
     return success_response(result, "Project created from local ingest", 201)
+
+
+@router.post(
+    "/projects/from-text",
+    response_model=BaseResponse[WorkflowExecutionResponse],
+    status_code=202,
+)
+async def create_project_from_text(
+    body: CreateProjectFromTextRequest,
+    ctx: UserContext = Depends(get_user_context_or_default),
+    service: ProjectService = Depends(get_project_service),
+):
+    """Create a project from a free-form text brief and kick generate.
+
+    The headline YouTube-free path: no URL to download, no captions to
+    scrape, no frames to extract. The brief becomes the manim_prompt
+    directly and GenerateVideoWorkflow runs against it in the chosen
+    orientation. Returns 202 + a WorkflowExecutionResponse for the
+    generate run; FE polls `GET /executions/:id` for progress.
+
+    Multi-orientation in one request isn't supported here — call
+    `POST /projects/{id}/generate` for the second orientation after
+    the first finishes.
+    """
+    execution = await service.create_from_text(
+        body,
+        user_id=ctx.user_id,
+        org_id=ctx.organization_id,
+        workspace_id=ctx.workspace_id,
+    )
+    return success_response(execution, "Generate workflow started", 202)
 
 
 @router.post(

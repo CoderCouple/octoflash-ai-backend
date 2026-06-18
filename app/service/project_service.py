@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.request.from_text_request import CreateProjectFromTextRequest
 from app.api.v1.request.local_ingest_request import (
     CreateProjectFromLocalIngestRequest,
     LocalIngestFrameRequest,
@@ -484,6 +485,127 @@ class ProjectService:
                 detail=f"Frame {index} must be JPEG-encoded.",
             )
         return image_bytes
+
+    async def create_from_text(
+        self,
+        body: CreateProjectFromTextRequest,
+        user_id: str | None = None,
+        org_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> WorkflowExecutionResponse:
+        """Create a Project from a free-form brief and kick GenerateVideoWorkflow.
+
+        Skips the analyze pipeline entirely — no URL to download, no
+        frames to extract. The brief becomes the manim_prompt directly
+        (and transcript/description, which plan_clips also reads). The
+        Project is born `status='analyzed'` and a single generate
+        workflow runs against it in the chosen orientation.
+
+        Multi-orientation (portrait + landscape) is intentionally out of
+        scope for the from-text entry point — the user can call
+        `/projects/{id}/generate` for the second orientation after the
+        first lands. The /generate path already handles N orientations
+        in one request.
+        """
+        owner = user_id or settings.default_user_id
+
+        # 1. Project shell — brief stamped on every field plan_clips looks at.
+        orientation_value = (
+            body.orientation.value if body.orientation is not None else "portrait"
+        )
+        project_kwargs: dict = {
+            "title": body.title or self._title_from_brief(body.brief),
+            "source_url": None,
+            "user_id": owner,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "status": ProjectStatus.ANALYZED,
+            "transcript": body.brief,
+            "description": body.brief,
+            "manim_prompt": body.brief,
+            "source_duration": body.target_duration or 60.0,
+        }
+        if body.orientation is not None:
+            project_kwargs["orientation"] = body.orientation
+        if body.quality is not None:
+            project_kwargs["quality"] = body.quality
+        if body.voiceover is not None:
+            project_kwargs["voiceover"] = body.voiceover
+        if body.voice_id is not None:
+            project_kwargs["voice_id"] = body.voice_id
+        if body.voice_gender is not None:
+            project_kwargs["voice_gender"] = body.voice_gender
+        if body.voice_accent is not None:
+            project_kwargs["voice_accent"] = body.voice_accent
+        if body.target_duration is not None:
+            project_kwargs["target_duration"] = body.target_duration
+
+        project = await self.project_repo.create(Project(**project_kwargs))
+
+        # 2. Reserve the GENERATE execution row + Temporal workflow_id up
+        # front (same pattern as create_from_source / generate_video).
+        execution_service = WorkflowExecutionService(self.db)
+        execution = await execution_service.create_execution(
+            project_id=project.id,
+            kind=WorkflowKind.GENERATE,
+            temporal_workflow_id="",
+            temporal_workflow_type=GenerateVideoWorkflow.__name__,
+        )
+        temporal_workflow_id = (
+            f"{settings.temporal_workflow_id_prefix}-generate-"
+            f"{orientation_value}-{execution.id}"
+        )
+        execution.temporal_workflow_id = temporal_workflow_id
+        await execution_service.execution_repo.update(execution)
+        await self.db.commit()
+
+        # 3. Kick GenerateVideoWorkflow with empty source_frame_paths —
+        # the per-clip script_generator + evaluator both already handle
+        # the no-source-frames path gracefully (see script_generator_service
+        # line ~765 and ~1009).
+        client = await get_temporal_client()
+        handle = await client.start_workflow(
+            GenerateVideoWorkflow.run,
+            GenerateVideoInput(
+                execution_id=execution.id,
+                project_id=project.id,
+                transcript=body.brief,
+                description=body.brief,
+                manim_prompt=body.brief,
+                source_duration=body.target_duration or 60.0,
+                orientation=orientation_value,
+                voiceover=bool(project.voiceover),
+                voice_id=project.voice_id or "",
+                quality="ql",
+                max_clips=body.max_clips,
+                source_frame_paths=[],
+            ),
+            id=temporal_workflow_id,
+            task_queue=settings.temporal_task_queue,
+        )
+
+        await execution_service.stamp_handle(
+            execution.id,
+            temporal_run_id=handle.first_execution_run_id,
+        )
+        return await execution_service.get_response(execution.id)
+
+    @staticmethod
+    def _title_from_brief(brief: str, *, max_len: int = 60) -> str:
+        """First sentence (or first N chars) of the brief, trimmed to ~60.
+
+        Cheap stand-in for an LLM title; we can swap in a Claude call
+        later if the autogen ever feels rough.
+        """
+        first_line = brief.strip().splitlines()[0] if brief.strip() else "Untitled brief"
+        # Cut at the first sentence boundary if it's well under the limit.
+        for stop in (". ", "? ", "! "):
+            idx = first_line.find(stop)
+            if 0 < idx < max_len:
+                return first_line[: idx + 1].rstrip()
+        if len(first_line) <= max_len:
+            return first_line
+        return first_line[: max_len - 1].rstrip() + "…"
 
     async def generate_video(
         self,
