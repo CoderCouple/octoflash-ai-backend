@@ -47,6 +47,7 @@ class ProjectService:
         self.db = db
         self.project_repo = ProjectRepository(db)
         self.scene_repo = SceneRepository(db)
+        self.workflow_repo = WorkflowRepository(db)
 
     async def create_project(
         self,
@@ -544,6 +545,10 @@ class ProjectService:
 
         # 2. Reserve the GENERATE execution row + Temporal workflow_id up
         # front (same pattern as create_from_source / generate_video).
+        # Note: from-text always creates a *new* project, so per-project
+        # idempotency isn't relevant here the way it is in generate_video.
+        # The "user double-clicks the dialog Submit" case is handled by
+        # the FE Button disabled state during in-flight submit.
         execution_service = WorkflowExecutionService(self.db)
         execution = await execution_service.create_execution(
             project_id=project.id,
@@ -668,7 +673,35 @@ class ProjectService:
         client = await get_temporal_client()
         responses: list[WorkflowExecutionResponse] = []
 
+        # Idempotency: if there's already a PENDING/RUNNING generate
+        # execution for this project + orientation, reuse it instead of
+        # starting a duplicate workflow. Plugs the editor double-click
+        # race and the from-text-then-Generate-button case where the FE
+        # fires /generate before the workflow's first activity has flipped
+        # project.status to "generating".
+        workflow_row = await self.workflow_repo.get_by_project_id(project_id)
+        in_flight: list = []
+        if workflow_row is not None:
+            in_flight = await execution_service.execution_repo.list_in_flight_for_workflow(
+                workflow_row.id
+            )
+
         for orientation in seen:
+            existing = next(
+                (
+                    e
+                    for e in in_flight
+                    if e.kind == WorkflowKind.GENERATE
+                    and e.temporal_workflow_id.startswith(
+                        f"{settings.temporal_workflow_id_prefix}-generate-{orientation}-"
+                    )
+                ),
+                None,
+            )
+            if existing is not None:
+                responses.append(await execution_service.get_response(existing.id))
+                continue
+
             execution = await execution_service.create_execution(
                 project_id=project.id,
                 kind=WorkflowKind.GENERATE,
