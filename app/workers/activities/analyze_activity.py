@@ -209,10 +209,15 @@ def _download_video(url: str, project_id: str, user_id: str | None = None) -> Pa
         cmd, capture_output=True, text=True, timeout=300, check=False,
     )
     if proc.returncode != 0:
-        stderr_tail = (proc.stderr or "")[-1500:]
+        stderr_full = proc.stderr or ""
+        # Plugin discovery (bgutil) + extractor handler selection happen
+        # at the START of stderr; the actual error message is at the END.
+        # Log both halves so we can diagnose whether bgutil even ran.
+        stderr_head = stderr_full[:4000]
+        stderr_tail = stderr_full[-2000:]
         activity.logger.error(
-            "yt-dlp FAILED (rc=%d) for url=%s\n--- stderr tail ---\n%s",
-            proc.returncode, url, stderr_tail,
+            "yt-dlp FAILED (rc=%d) for url=%s\n--- stderr head ---\n%s\n--- stderr tail ---\n%s",
+            proc.returncode, url, stderr_head, stderr_tail,
         )
         raise RuntimeError(
             f"yt-dlp failed (rc={proc.returncode}). Last stderr: {stderr_tail[-400:]}"
