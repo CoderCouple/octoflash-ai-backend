@@ -76,8 +76,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     | tar -xz -C /opt \
  && mv "/opt/bgutil-ytdlp-pot-provider-${BGUTIL_VERSION}" /opt/bgutil-pot-provider \
  && cd /opt/bgutil-pot-provider/server \
- && npm install --omit=dev \
- && npm run build
+ && npm install \
+ && npm run build \
+ && npm prune --omit=dev
 ENV BGUTIL_POT_PROVIDER_SERVER_HOME=/opt/bgutil-pot-provider/server
 
 RUN pip install --upgrade pip \
