@@ -378,6 +378,14 @@ def make_mcq_card(
     q_text = Text(question, font_size=BODY_SIZE, color=TEXT_PRIMARY, weight="BOLD")
     q_text.to_edge(UP, buff=1.0)
 
+    # Clamp the option width to the current frame so portrait (9-wide)
+    # doesn't overflow. Landscape's default frame_width is ~14.222,
+    # giving back the original 10-unit cards. Portrait's is ~9 wide so
+    # we cap at ~8 to leave a 0.5-unit margin each side.
+    from manim import config as _manim_config
+
+    option_width = min(10.0, _manim_config.frame_width - 1.0)
+
     option_vgroup = VGroup()
     for i, opt in enumerate(options):
         letter = labels[i] if i < len(labels) else str(i + 1)
@@ -388,7 +396,7 @@ def make_mcq_card(
 
         opt_rect = RoundedRectangle(
             corner_radius=0.15,
-            width=10,
+            width=option_width,
             height=0.7,
             fill_color=ACCENT_GREEN if is_correct else BG_COLOR,
             fill_opacity=0.15 if is_correct else 0.0,

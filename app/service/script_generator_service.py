@@ -956,8 +956,13 @@ async def generate_episode_script(
     # coherence — without it Claude can produce OctoflashScene + self.voiceover(...)
     # code even when the prompt said voiceover=False, which then hangs Manim's
     # ElevenLabs HTTP call at runtime. See validator_service.validate docstring.
+    # `is_outro` triggers the outro-purity check: the construct() body
+    # must be just `outro_sequence(self)`, no hand-rolled end-card on top.
+    # Detected from the clip title — the planner always emits "Outro" for
+    # the brand outro clip.
+    is_outro = "outro" in (title or "").lower()
     code, validator_errors = await validator_retry(
-        _one_attempt, max_attempts=2, voiceover=voiceover,
+        _one_attempt, max_attempts=2, voiceover=voiceover, is_outro=is_outro,
     )
 
     if validator_errors:

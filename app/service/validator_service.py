@@ -146,7 +146,12 @@ def _hallucinated_imports(tree: ast.AST) -> list[str]:
     return errors
 
 
-def validate(code: str, *, voiceover: bool = True) -> list[str]:
+def validate(
+    code: str,
+    *,
+    voiceover: bool = True,
+    is_outro: bool = False,
+) -> list[str]:
     """Return a list of human-readable validation errors. Empty = pass.
 
     Always runs the syntax check first; if the code doesn't parse, returns just
@@ -217,6 +222,79 @@ def validate(code: str, *, voiceover: bool = True) -> list[str]:
                 "with `self.wait(N)` calls."
             )
 
+    # ── outro purity ────────────────────────────────────────────────────
+    # The clip planner explicitly tells the LLM that the outro clip's
+    # construct body must be `outro_sequence(self)` and nothing else,
+    # because the helper owns the entire frame (it does its own FadeIn /
+    # wait / FadeOut). When the LLM disobeys and adds its own
+    # "Thanks for watching" animation on top of the outro_sequence call,
+    # the user sees the outro animation play twice — once in the LLM's
+    # custom block and once in the helper.
+    #
+    # Enforce by walking the construct() body via AST: must contain a
+    # call to outro_sequence(self) at the top level and at most one or
+    # two trivial supporting statements (self.wait, comments). Anything
+    # heavier is a violation.
+    if is_outro:
+        errors.extend(_outro_purity_errors(tree))
+
+    return errors
+
+
+def _outro_purity_errors(tree: ast.AST) -> list[str]:
+    """Walk a scene class's construct() and verify it's just an
+    `outro_sequence(self)` call (plus optional `self.wait(...)`).
+    Anything else is presumed to be a hand-rolled end-card the LLM
+    drew on top of the brand outro."""
+    errors: list[str] = []
+    saw_outro_call = False
+    extra_statements: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "construct":
+            continue
+        for stmt in node.body:
+            # Allow docstring + bare `pass`.
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                continue
+            if isinstance(stmt, ast.Pass):
+                continue
+            # The outro call itself.
+            if (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Name)
+                and stmt.value.func.id == "outro_sequence"
+            ):
+                saw_outro_call = True
+                continue
+            # Trivial self.wait — fine before/after the outro call.
+            if (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute)
+                and stmt.value.func.attr == "wait"
+            ):
+                continue
+            # Anything else is a hand-rolled end-card.
+            extra_statements.append(ast.unparse(stmt)[:120])
+
+    if not saw_outro_call:
+        errors.append(
+            "Outro clip is missing the `outro_sequence(self)` call. "
+            "The brand outro helper owns the entire frame — call it and "
+            "nothing else. Do not draw your own end-card on top."
+        )
+    if extra_statements:
+        errors.append(
+            "Outro clip's construct() contains extra content alongside "
+            "`outro_sequence(self)` — the helper renders the full Octoflash "
+            "end-card itself, so any other Text/FadeIn/FadeOut you add will "
+            "play on top of it and look like the outro is duplicated. "
+            "Remove these statements:\n  - "
+            + "\n  - ".join(extra_statements[:5])
+        )
+
     return errors
 
 
@@ -225,6 +303,7 @@ async def generate_with_retry(
     max_attempts: int = 3,
     *,
     voiceover: bool = True,
+    is_outro: bool = False,
 ) -> tuple[str, list[str]]:
     """Call → validate → retry-with-feedback loop.
 
@@ -253,7 +332,7 @@ async def generate_with_retry(
                     attempt, max_attempts, "yes" if feedback else "no")
         code = await call(feedback)
         last_code = code
-        errors = validate(code, voiceover=voiceover)
+        errors = validate(code, voiceover=voiceover, is_outro=is_outro)
 
         if not errors:
             logger.info("validator: attempt %d passed (%d chars)", attempt, len(code))
